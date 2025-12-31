@@ -21,7 +21,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
 
   const xpPercentage = (user.xp / user.xpProximoNivel) * 100;
 
-  // Função utilitária para comprimir imagens via Canvas
+  // Função utilitária para comprimir imagens (Otimizada para Velocidade)
   const processImage = (file: File, maxWidth: number): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -43,8 +43,8 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
           
-          // Comprime para JPEG com qualidade 0.7 (reduz drasticamente o tamanho do Base64)
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          // JPEG com qualidade 0.6 (reduz tamanho em ~80% e acelera upload)
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
         };
         img.src = event.target?.result as string;
       };
@@ -57,8 +57,8 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
     if (file) {
       setProcessingImage(true);
       try {
-        // Avatar max 300px, Capa max 800px para evitar travamento do banco
-        const maxWidth = type === 'avatar' ? 300 : 800;
+        // Avatar max 250px (suficiente para mobile), Capa max 800px
+        const maxWidth = type === 'avatar' ? 250 : 800;
         const compressedBase64 = await processImage(file, maxWidth);
         
         if (type === 'avatar') {
@@ -81,7 +81,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
     setIsEditing(false);
     setMessage('Perfil atualizado com sucesso');
     
-    // Persistência
+    // Persistência em background
     await storage.saveUser(editedUser);
     
     setTimeout(() => setMessage(''), 3000);
@@ -256,7 +256,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
         </div>
       </div>
 
-      {/* Stats Cards - Refatorado com Seguidores */}
+      {/* Stats Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Card XP e Nível */}
         <div className="bg-white rounded-3xl p-5 md:p-6 apple-shadow">

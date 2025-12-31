@@ -2,6 +2,23 @@
 import { User, Post, Mission, RewardItem, AppSettings, Comment } from '../types';
 import { supabase } from './supabase';
 
+// --- CACHE SYSTEM (TURBO MODE) ---
+// Armazena dados em memória para evitar requests repetidos e garantir navegação instantânea.
+const CACHE_DURATION = 60000; // 1 minuto de cache
+const memoryCache = {
+  posts: { data: null as Post[] | null, timestamp: 0 },
+  users: { data: null as User[] | null, timestamp: 0 },
+  missions: { data: null as Mission[] | null, timestamp: 0 },
+  rewards: { data: null as RewardItem[] | null, timestamp: 0 }
+};
+
+const isCacheValid = (key: keyof typeof memoryCache) => {
+  const now = Date.now();
+  return memoryCache[key].data && (now - memoryCache[key].timestamp < CACHE_DURATION);
+};
+
+// --- END CACHE SYSTEM ---
+
 // Utilitário para mapear User DB (snake_case) -> User App (camelCase)
 const mapUser = (dbUser: any): User => ({
   id: dbUser.id,
@@ -35,11 +52,11 @@ export const storage = {
 
   getCurrentUser: async (): Promise<User | null> => {
     try {
+        // Check de sessão é rápido pois usa o localStorage do supabase-js
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error || !session) return null;
 
-        // 1. FAST TRACK: Buscar APENAS o perfil primeiro
-        // Esta query é leve e deve retornar em < 500ms
+        // NÃO usamos cache para o Current User para garantir que XP/Coins estejam sempre atualizados
         const { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
@@ -47,15 +64,13 @@ export const storage = {
             .single();
 
         if (profileError || !profile) {
-            console.error("Erro ao carregar perfil crítico:", profileError);
+            console.error("Erro ao carregar perfil:", profileError);
             return null;
         }
 
         const mappedUser = mapUser(profile);
 
-        // 2. LAZY LOAD DE SEGUIDORES (Com Timeout Rápido)
-        // Tentamos buscar seguidores, mas se demorar mais de 2s, desistimos
-        // e retornamos o usuário sem estatísticas para não travar o app.
+        // Fast Track: Tenta carregar seguidores com timeout de 2s
         try {
             const secondaryDataPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
@@ -64,7 +79,6 @@ export const storage = {
 
             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject('timeout'), 2000));
 
-            // Corrida: Dados vs 2 segundos
             const [followingResult, followersResult] = await Promise.race([secondaryDataPromise, timeoutPromise]) as any;
 
             const following = followingResult.data;
@@ -73,12 +87,7 @@ export const storage = {
             mappedUser.followersCount = followersResult.count || 0;
 
         } catch (secondaryError) {
-            if (secondaryError === 'timeout') {
-                console.warn("Skipping followers load due to timeout (Fast Load optimization)");
-            } else {
-                console.warn("Error loading secondary stats", secondaryError);
-            }
-            // Mantém os defaults zerados
+            // Silently ignore timeout/error for secondary stats to keep app fast
         }
 
         return mappedUser;
@@ -88,7 +97,6 @@ export const storage = {
     }
   },
 
-  // Fallback para criar perfil manualmente se o Trigger falhar
   createProfile: async (userId: string, email: string, name: string, role: string, avatarCor: string) => {
       const { error } = await supabase.from('users').insert({
           id: userId,
@@ -108,21 +116,33 @@ export const storage = {
           streak: 0
       });
       if (error) {
-          console.error("Erro ao criar perfil manualmente:", error);
+          console.error("Erro ao criar perfil:", error);
           throw error;
       }
   },
 
   getUsers: async (): Promise<User[]> => {
-    const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false });
+    // Ranking Cache
+    if (isCacheValid('users')) {
+        return memoryCache.users.data!;
+    }
+
+    const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false }).limit(50); // Limitando a 50 para performance
     if (error) {
       console.error('Erro ao buscar usuários:', error);
       return [];
     }
-    return data.map(mapUser);
+    const mapped = data.map(mapUser);
+    
+    // Update Cache
+    memoryCache.users = { data: mapped, timestamp: Date.now() };
+    return mapped;
   },
 
   saveUser: async (user: User) => {
+    // Invalida cache de ranking pois pontuação mudou
+    memoryCache.users.timestamp = 0;
+
     const dbUser = {
       name: user.name,
       bio: user.bio,
@@ -142,11 +162,15 @@ export const storage = {
 
   // --- POSTS ---
 
-  getPosts: async (): Promise<Post[]> => {
+  getPosts: async (forceRefresh = false): Promise<Post[]> => {
+    // Feed Cache - Instant Load
+    if (!forceRefresh && isCacheValid('posts')) {
+        return memoryCache.posts.data!;
+    }
+
     const { data: { session } } = await supabase.auth.getSession();
     const currentUserId = session?.user?.id;
 
-    // Buscar Posts + Dados do Autor + Comentários (e autores) + Likes
     const { data, error } = await supabase
       .from('posts')
       .select(`
@@ -159,14 +183,15 @@ export const storage = {
         likes (user_id)
       `)
       .order('is_pinned', { ascending: false })
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(30); // Paginação implícita para velocidade
 
     if (error) {
       console.error('Erro ao buscar posts:', error);
       return [];
     }
 
-    return data.map((p: any) => ({
+    const mappedPosts = data.map((p: any) => ({
       id: p.id,
       userId: p.user_id,
       userName: p.users?.name || 'Usuário Desconhecido',
@@ -175,7 +200,7 @@ export const storage = {
       content: p.content,
       imageUrl: p.image_url,
       timestamp: p.created_at,
-      likes: p.likes || 0, 
+      likes: p.likes ? p.likes.length : 0, 
       isPinned: p.is_pinned,
       likedByMe: currentUserId ? (p.likes || []).some((l: any) => l.user_id === currentUserId) : false,
       comments: (p.comments || []).map((c: any) => ({
@@ -188,9 +213,16 @@ export const storage = {
         avatarCor: c.users?.avatar_cor
       })).sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     }));
+
+    // Update Cache
+    memoryCache.posts = { data: mappedPosts, timestamp: Date.now() };
+    return mappedPosts;
   },
 
   savePost: async (post: Post) => {
+    // Ao salvar post, invalidamos o cache para forçar recarregamento na próxima leitura
+    memoryCache.posts.timestamp = 0;
+
     if (!post.id || post.id.length < 10) { 
         // Insert
         const { error } = await supabase.from('posts').insert({
@@ -210,6 +242,8 @@ export const storage = {
   },
 
   toggleLike: async (postId: string, userId: string) => {
+      // Likes são atualizados otimisticamente na UI, não precisamos invalidar cache imediatamente
+      // para não causar glitch visual
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
       
       if (data) {
@@ -220,6 +254,7 @@ export const storage = {
   },
 
   addComment: async (postId: string, userId: string, content: string) => {
+      memoryCache.posts.timestamp = 0; // Invalida cache para mostrar comentário
       const { error } = await supabase.from('comments').insert({
           post_id: postId,
           user_id: userId,
@@ -229,15 +264,19 @@ export const storage = {
   },
 
   deletePost: async (postId: string) => {
+      memoryCache.posts.timestamp = 0;
       await supabase.from('posts').delete().eq('id', postId);
   },
 
   // --- MISSIONS & REWARDS ---
 
   getMissions: async (): Promise<Mission[]> => {
+    if (isCacheValid('missions')) return memoryCache.missions.data!;
+
     const { data, error } = await supabase.from('missions').select('*').eq('is_active', true);
     if (error) return [];
-    return data.map((m: any) => ({
+    
+    const mapped = data.map((m: any) => ({
         id: m.id,
         title: m.title,
         desc: m.description,
@@ -247,12 +286,18 @@ export const storage = {
         type: m.type,
         isActive: m.is_active
     }));
+
+    memoryCache.missions = { data: mapped, timestamp: Date.now() };
+    return mapped;
   },
 
   getRewards: async (): Promise<RewardItem[]> => {
+    if (isCacheValid('rewards')) return memoryCache.rewards.data!;
+
     const { data, error } = await supabase.from('rewards').select('*');
     if (error) return [];
-    return data.map((r: any) => ({
+    
+    const mapped = data.map((r: any) => ({
         id: r.id,
         title: r.title,
         cost: r.cost,
@@ -263,11 +308,15 @@ export const storage = {
         stock: r.stock,
         category: r.category
     }));
+
+    memoryCache.rewards = { data: mapped, timestamp: Date.now() };
+    return mapped;
   },
 
   // --- FOLLOW SYSTEM ---
   
   followUser: async (followerId: string, followingId: string) => {
+      memoryCache.users.timestamp = 0; // Invalida ranking
       const { error } = await supabase.from('follows').insert({
           follower_id: followerId,
           following_id: followingId
@@ -296,6 +345,7 @@ export const storage = {
   },
 
   saveMissions: async (missions: Mission[]) => {
+      memoryCache.missions.timestamp = 0;
       const dbMissions = missions.map(m => ({
           id: m.id.includes('-') ? m.id : undefined, 
           title: m.title,
@@ -309,6 +359,7 @@ export const storage = {
   },
 
   saveRewards: async (rewards: RewardItem[]) => {
+      memoryCache.rewards.timestamp = 0;
       const dbRewards = rewards.map(r => ({
           id: r.id.includes('-') ? r.id : undefined,
           title: r.title,
@@ -324,6 +375,11 @@ export const storage = {
   
   // Helpers para sessão
   signOut: async () => {
+      // Limpa todo o cache ao sair
+      memoryCache.posts = { data: null, timestamp: 0 };
+      memoryCache.users = { data: null, timestamp: 0 };
+      memoryCache.missions = { data: null, timestamp: 0 };
+      memoryCache.rewards = { data: null, timestamp: 0 };
       await supabase.auth.signOut();
   },
   

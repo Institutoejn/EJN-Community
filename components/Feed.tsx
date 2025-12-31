@@ -24,8 +24,12 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchPosts = async () => {
-      const savedPosts = await storage.getPosts();
+  const fetchPosts = async (force = false) => {
+      // Loading state só aparece na primeira carga. 
+      // Atualizações subsequentes são silenciosas ou mostram skeleton se cache estiver vazio.
+      if (posts.length === 0) setLoadingPosts(true);
+      
+      const savedPosts = await storage.getPosts(force);
       setPosts(savedPosts);
       setLoadingPosts(false);
   };
@@ -34,14 +38,16 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     fetchPosts();
   }, []);
 
-  // Função utilitária para comprimir imagens (duplicada para evitar dependência externa neste estágio)
-  const processImage = (file: File, maxWidth: number): Promise<string> => {
+  // --- FAST IMAGE PROCESSING ---
+  // Qualidade 0.6 e Max Width 700px garantem Base64 leve e rápido
+  const processImage = (file: File): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
+          const maxWidth = 700; // Otimizado para velocidade
           let width = img.width;
           let height = img.height;
 
@@ -56,7 +62,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
           
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          // JPEG com qualidade 0.6 para performance máxima
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
         };
         img.src = event.target?.result as string;
       };
@@ -69,7 +76,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     if (file) {
       setProcessingImage(true);
       try {
-        const compressed = await processImage(file, 800);
+        const compressed = await processImage(file);
         setSelectedImage(compressed);
       } catch (err) {
         console.error("Erro ao processar imagem do post");
@@ -89,36 +96,38 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         userName: user.name,
         content: newPost,
         imageUrl: selectedImage || undefined,
-        comments: [], // Supabase preenche isso
+        comments: [], 
         likes: 0,
         timestamp: new Date().toISOString(),
-        id: '' // Será gerado pelo banco
+        id: '' 
     });
 
-    // Refresh no feed
-    await fetchPosts();
-
+    // Limpeza da UI Instantânea
     setNewPost('');
     setSelectedImage(null);
 
+    // Feedback de XP
     const bonus = selectedImage ? 75 : 50;
     setXpAmount(bonus);
     setShowXpGain(true);
     
-    // Atualizar UI do usuário (idealmente sync com backend também)
+    // Atualizar UI do usuário 
     const updatedUser = { 
       ...user, 
       xp: user.xp + bonus, 
       postsCount: (user.postsCount || 0) + 1 
     };
     onUpdateUser(updatedUser);
-    await storage.saveUser(updatedUser);
+    
+    // Background updates (fire & forget)
+    storage.saveUser(updatedUser);
+    fetchPosts(true); // Recarrega feed em background
 
     setTimeout(() => setShowXpGain(false), 2000);
   };
 
   const handleLike = async (postId: string) => {
-    // Optimistic Update
+    // Optimistic Update Instantâneo
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
@@ -144,15 +153,16 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
+    // Optimistic: Adiciona comentário visualmente antes do banco confirmar (se tivéssemos a estrutura completa aqui)
+    // Para simplificar, limpamos o input e chamamos refresh
+    setCommentInputs({ ...commentInputs, [postId]: '' });
+    
     await storage.addComment(postId, user.id, text);
     
-    // Refresh posts para pegar o novo comentário
-    // Em app real, usaríamos Supabase Realtime subscriptions
-    await fetchPosts();
+    await fetchPosts(true); // Força refresh do cache
 
-    setCommentInputs({ ...commentInputs, [postId]: '' });
     onUpdateUser({ ...user, xp: user.xp + 5 });
-    await storage.saveUser({ ...user, xp: user.xp + 5 });
+    storage.saveUser({ ...user, xp: user.xp + 5 });
   };
 
   const removeSelectedImage = () => {
