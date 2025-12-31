@@ -10,14 +10,12 @@ import { supabase } from './services/supabase';
 import { Icons } from './constants';
 
 // --- LAZY LOADING (Code Splitting) ---
-// Carrega os módulos pesados apenas quando necessários, acelerando o boot inicial em 60%
 const Feed = lazy(() => import('./components/Feed'));
 const Profile = lazy(() => import('./components/Profile'));
 const Ranking = lazy(() => import('./components/Ranking'));
 const Missions = lazy(() => import('./components/Missions'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 
-// Skeleton Loader Elegante para transições suaves
 const PageSkeleton = () => (
   <div className="w-full animate-pulse space-y-6">
     <div className="bg-white h-48 rounded-3xl w-full opacity-50"></div>
@@ -31,9 +29,6 @@ const PageSkeleton = () => (
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  
-  // PERSISTÊNCIA DE ESTADO (SPA Routing Fix)
-  // Inicializa a view lendo do localStorage para aguentar F5
   const [currentView, setCurrentView] = useState<AppView>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('ejn_last_view');
@@ -46,7 +41,6 @@ const App: React.FC = () => {
   const [loadingError, setLoadingError] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Efeito para salvar a rota/view sempre que mudar
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('ejn_last_view', currentView);
@@ -57,9 +51,7 @@ const App: React.FC = () => {
     let mounted = true;
 
     const initApp = async () => {
-      // 1. INSTANT BOOT: Cache Local (0ms delay)
-      const cachedUser = await storage.getCurrentUser(true); // true = skip network
-      
+      const cachedUser = await storage.getCurrentUser(true);
       if (cachedUser) {
           if (mounted) {
               setCurrentUser(cachedUser);
@@ -67,27 +59,17 @@ const App: React.FC = () => {
           }
       }
 
-      // 2. BACKGROUND REVALIDATION
       try {
           const freshUser = await storage.getCurrentUser(false); 
-          
           if (mounted) {
              if (freshUser) {
                  setCurrentUser(freshUser);
-                 setLoading(false);
              } else if (!cachedUser) {
-                 // Se não tinha cache e a rede falhou/sem sessão
-                 setLoading(false);
+                 setCurrentUser(null);
              }
-             
-             // Verificação de segurança de sessão
-             if (cachedUser && !freshUser) {
-                 const { data: { session } } = await supabase.auth.getSession();
-                 if (!session) setCurrentUser(null);
-             }
+             setLoading(false);
           }
       } catch (err) {
-          console.warn("Background update failed, using cache if available");
           if (!cachedUser && mounted) setLoading(false);
       }
     };
@@ -95,11 +77,10 @@ const App: React.FC = () => {
     initApp();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_OUT') {
+      if (event === 'SIGNED_OUT' || !session) {
         if (mounted) {
           setCurrentUser(null);
           setCurrentView('FEED');
-          localStorage.removeItem('ejn_last_view'); // Limpa histórico ao sair
           setLoading(false);
         }
       } else if (event === 'SIGNED_IN' && session) {
@@ -129,16 +110,16 @@ const App: React.FC = () => {
     setLoading(true);
     try {
         await storage.signOut();
+        setCurrentUser(null);
+        localStorage.clear();
+        sessionStorage.clear();
+        // Redirecionamento forçado para garantir que a sessão foi encerrada em todos os níveis
+        window.location.href = window.location.origin;
     } catch (error) {
         console.error("Erro ao sair:", error);
+        localStorage.clear();
+        window.location.href = window.location.origin;
     }
-    setCurrentUser(null);
-    setCurrentView('FEED');
-    setIsMobileMenuOpen(false);
-    setLoadingError(false);
-    localStorage.removeItem('ejn_last_view');
-    setLoading(false);
-    window.location.reload(); 
   };
 
   const handleUpdateUser = (updatedUser: User) => {
@@ -160,22 +141,20 @@ const App: React.FC = () => {
     try {
         await storage.followUser(currentUser.id, targetId);
         await storage.saveUser(updatedUser);
-        alert('Conexão estabelecida! +10 XP de bônus por Networking.');
     } catch (error) {
         console.error("Erro ao seguir usuário:", error);
     }
   };
 
-  // LOADING INICIAL (Apenas se não houver cache)
   if (loading) {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
+        <p className="text-xs font-bold text-apple-tertiary animate-pulse">Autenticando...</p>
       </div>
     );
   }
 
-  // ERRO CRÍTICO (Fallback fora do Boundary principal)
   if (loadingError) {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center p-6 text-center">
@@ -204,8 +183,6 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-apple-bg selection:bg-ejn-gold selection:text-ejn-dark relative font-sans pb-20 lg:pb-0">
-        
-        {/* Mobile Drawer */}
         {isMobileMenuOpen && (
           <div 
             className="fixed inset-0 bg-black/30 backdrop-blur-md z-[100] transition-opacity duration-300 lg:hidden"
@@ -249,7 +226,6 @@ const App: React.FC = () => {
                </button>
              )}
           </div>
-
           <Sidebar user={currentUser} setView={(v) => { setCurrentView(v); setIsMobileMenuOpen(false); }} onFollow={handleFollowUser} />
         </div>
 
@@ -263,14 +239,12 @@ const App: React.FC = () => {
         
         <main className="max-w-[1600px] mx-auto px-4 pt-20 md:pt-24 md:px-8 pb-8">
           <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-start justify-center">
-            
             {!isAdminView && (
               <div className="hidden lg:block lg:w-[240px] xl:w-[280px] lg:sticky lg:top-24 flex-shrink-0">
                 <Sidebar user={currentUser} setView={setCurrentView} onFollow={handleFollowUser} />
               </div>
             )}
 
-            {/* MAIN CONTENT COM SUSPENSE (Lazy Loading) */}
             <div className="w-full flex-grow flex justify-center max-w-full min-w-0">
               <div className={`w-full ${isAdminView ? 'max-w-7xl' : 'max-w-2xl xl:max-w-3xl'}`}>
                 <Suspense fallback={<PageSkeleton />}>
@@ -300,37 +274,6 @@ const App: React.FC = () => {
             )}
           </div>
         </main>
-
-        {!isAdminView && currentView === 'FEED' && (
-          <button 
-            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-            className="lg:hidden fixed bottom-24 right-6 w-14 h-14 bg-ejn-gold text-ejn-dark rounded-full shadow-2xl flex items-center justify-center z-40 apple-transition hover:scale-110 active:scale-95 border-2 border-white/20"
-          >
-            <Icons.Plus className="w-8 h-8" />
-          </button>
-        )}
-
-        {!isAdminView && (
-          <div className="lg:hidden fixed bottom-0 left-0 right-0 h-[70px] bg-white border-t border-apple-border flex items-center justify-around px-2 z-50 pb-safe">
-            {[
-              { id: 'FEED', label: 'Feed', icon: <Icons.Home /> },
-              { id: 'RANKING', label: 'Ranking', icon: <Icons.Trophy /> },
-              { id: 'MISSIONS', label: 'Missões', icon: <Icons.Award /> },
-              { id: 'PROFILE', label: 'Perfil', icon: <Icons.User /> }
-            ].map(item => (
-              <button 
-                key={item.id} 
-                onClick={() => setCurrentView(item.id as AppView)}
-                className={`flex-1 flex flex-col items-center justify-center py-1 transition-all duration-300 ${currentView === item.id ? 'text-ejn-gold' : 'text-apple-tertiary'}`}
-              >
-                <div className={`mb-1 ${currentView === item.id ? '-translate-y-1' : ''} transition-transform duration-300`}>
-                  {item.icon}
-                </div>
-                <span className="text-[10px] font-medium">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
       </div>
     </ErrorBoundary>
   );

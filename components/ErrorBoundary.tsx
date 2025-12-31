@@ -1,3 +1,4 @@
+
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 
 interface Props {
@@ -9,8 +10,11 @@ interface State {
   error: Error | null;
 }
 
-// Fix: Using named import 'Component' and removing redundant 'public state' declaration to ensure TypeScript correctly recognizes inherited 'props' from React.Component
-class ErrorBoundary extends Component<Props, State> {
+// Fix: Explicitly declaring 'state' and 'props' and using React.Component to ensure TypeScript correctly recognizes inherited properties in all build contexts.
+class ErrorBoundary extends React.Component<Props, State> {
+  public state: State;
+  public props: Props;
+
   constructor(props: Props) {
     super(props);
     this.state = {

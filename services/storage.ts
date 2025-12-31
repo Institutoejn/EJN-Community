@@ -2,7 +2,7 @@
 import { User, Post, Mission, RewardItem, AppSettings, Comment } from '../types';
 import { supabase } from './supabase';
 
-// --- TURBO CACHE SYSTEM (LOCAL STORAGE + MEMORY) ---
+// --- TURBO CACHE SYSTEM ---
 const CACHE_KEYS = {
   USER: 'ejn_user_cache',
   POSTS: 'ejn_posts_cache',
@@ -26,6 +26,13 @@ const localCache = {
   },
   clear: () => {
     Object.values(CACHE_KEYS).forEach(k => localStorage.removeItem(k));
+    localStorage.removeItem('ejn_last_view');
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.includes('auth-token')) {
+            localStorage.removeItem(key);
+        }
+    }
   }
 };
 
@@ -94,10 +101,10 @@ export const storage = {
 
   getUsers: async (forceRefresh = false): Promise<User[]> => {
     const cached = localCache.get<User[]>(CACHE_KEYS.USERS);
-    if (!forceRefresh && cached) return cached;
+    if (!forceRefresh && cached) return cached || [];
     const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false });
     if (error) return cached || [];
-    const mapped = data.map(mapUser);
+    const mapped = (data || []).map(mapUser);
     localCache.set(CACHE_KEYS.USERS, mapped);
     return mapped;
   },
@@ -117,12 +124,17 @@ export const storage = {
       role: user.role,
       status: user.status
     };
-    await supabase.from('users').update(dbUser).eq('id', user.id);
+    const { error } = await supabase.from('users').update(dbUser).eq('id', user.id);
+    if (error) throw error;
     localCache.set(CACHE_KEYS.USER, user);
   },
 
   deleteUser: async (userId: string) => {
-    await supabase.from('users').delete().eq('id', userId);
+    const { error } = await supabase.from('users').delete().eq('id', userId);
+    if (error) throw error;
+    
+    // Limpa caches locais
+    localStorage.removeItem(CACHE_KEYS.USERS); 
     const users = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
     localCache.set(CACHE_KEYS.USERS, users.filter(u => u.id !== userId));
   },
@@ -130,14 +142,14 @@ export const storage = {
   // --- POSTS ---
   getPosts: async (forceRefresh = false): Promise<Post[]> => {
     const cached = localCache.get<Post[]>(CACHE_KEYS.POSTS);
-    if (!forceRefresh && cached) return cached;
+    if (!forceRefresh && cached) return cached || [];
     const { data: { session } } = await supabase.auth.getSession();
     const { data, error } = await supabase
       .from('posts')
       .select(`*, users:user_id (name, avatar_url, avatar_cor), comments (*, users:user_id (name, avatar_url, avatar_cor)), likes (user_id)`)
       .order('created_at', { ascending: false });
     if (error) return cached || [];
-    const mappedPosts = data.map((p: any) => ({
+    const mappedPosts = (data || []).map((p: any) => ({
       id: p.id,
       userId: p.user_id,
       userName: p.users?.name || 'Usuário',
@@ -160,14 +172,17 @@ export const storage = {
 
   savePost: async (post: Post) => {
     if (post.id && !post.id.startsWith('temp-')) {
-      await supabase.from('posts').update({ content: post.content, is_pinned: post.isPinned }).eq('id', post.id);
+      const { error } = await supabase.from('posts').update({ content: post.content, is_pinned: post.isPinned }).eq('id', post.id);
+      if (error) throw error;
     } else {
-      await supabase.from('posts').insert({ user_id: post.userId, content: post.content, image_url: post.imageUrl });
+      const { error } = await supabase.from('posts').insert({ user_id: post.userId, content: post.content, image_url: post.imageUrl });
+      if (error) throw error;
     }
   },
 
   deletePost: async (postId: string) => {
-    await supabase.from('posts').delete().eq('id', postId);
+    const { error } = await supabase.from('posts').delete().eq('id', postId);
+    if (error) throw error;
     const posts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
     localCache.set(CACHE_KEYS.POSTS, posts.filter(p => p.id !== postId));
   },
@@ -186,8 +201,8 @@ export const storage = {
   getMissions: async (): Promise<Mission[]> => {
     const { data, error } = await supabase.from('missions').select('*').order('created_at', { ascending: false });
     if (error) return localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
-    const mapped = data.map((m: any) => ({
-        id: m.id, title: m.title, desc: m.description, rewardXP: m.reward_xp, rewardCoins: m.reward_coins,
+    const mapped = (data || []).map((m: any) => ({
+        id: m.id.toString(), title: m.title, desc: m.description, rewardXP: m.reward_xp, rewardCoins: m.reward_coins,
         icon: m.icon, type: m.type, isActive: m.is_active
     }));
     localCache.set(CACHE_KEYS.MISSIONS, mapped);
@@ -199,23 +214,28 @@ export const storage = {
           title: mission.title, description: mission.desc, reward_xp: mission.rewardXP,
           reward_coins: mission.rewardCoins, icon: mission.icon, type: mission.type, is_active: mission.isActive
       };
-      if (mission.id && mission.id.length > 15) {
-          await supabase.from('missions').update(dbData).eq('id', mission.id);
+      if (mission.id && mission.id.length > 5) {
+          const { error } = await supabase.from('missions').update(dbData).eq('id', mission.id);
+          if (error) throw error;
       } else {
-          await supabase.from('missions').insert(dbData);
+          const { error } = await supabase.from('missions').insert(dbData);
+          if (error) throw error;
       }
   },
 
   deleteMission: async (id: string) => {
-      await supabase.from('missions').delete().eq('id', id);
+      const { error } = await supabase.from('missions').delete().eq('id', id);
+      if (error) throw error;
+      const missions = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
+      localCache.set(CACHE_KEYS.MISSIONS, missions.filter(m => m.id.toString() !== id.toString()));
   },
 
   // --- REWARDS ---
   getRewards: async (): Promise<RewardItem[]> => {
     const { data, error } = await supabase.from('rewards').select('*').order('cost', { ascending: true });
     if (error) return localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
-    const mapped = data.map((r: any) => ({
-        id: r.id, title: r.title, cost: r.cost, desc: r.description, longDesc: r.long_desc,
+    const mapped = (data || []).map((r: any) => ({
+        id: r.id.toString(), title: r.title, cost: r.cost, desc: r.description, longDesc: r.long_desc,
         icon: r.icon, imageUrl: r.image_url, stock: r.stock, category: r.category
     }));
     localCache.set(CACHE_KEYS.REWARDS, mapped);
@@ -227,33 +247,49 @@ export const storage = {
           title: reward.title, description: reward.desc, long_desc: reward.longDesc, cost: reward.cost,
           icon: reward.icon, image_url: reward.imageUrl, stock: reward.stock, category: reward.category
       };
-      if (reward.id && reward.id.length > 15) {
-          await supabase.from('rewards').update(dbData).eq('id', reward.id);
+      if (reward.id && reward.id.length > 5) {
+          const { error } = await supabase.from('rewards').update(dbData).eq('id', reward.id);
+          if (error) throw error;
       } else {
-          await supabase.from('rewards').insert(dbData);
+          const { error } = await supabase.from('rewards').insert(dbData);
+          if (error) throw error;
       }
   },
 
   deleteReward: async (id: string) => {
-      await supabase.from('rewards').delete().eq('id', id);
+      const { error } = await supabase.from('rewards').delete().eq('id', id);
+      if (error) {
+          console.error("Erro ao deletar do Supabase:", error);
+          throw error;
+      }
+      const rewards = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
+      localCache.set(CACHE_KEYS.REWARDS, rewards.filter(r => r.id.toString() !== id.toString()));
   },
 
   // --- SETTINGS ---
   getSettings: async (): Promise<AppSettings> => {
-    const { data } = await supabase.from('settings').select('*').single();
-    if (!data) return { platformName: 'Rede Social EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10 };
+    const { data, error } = await supabase.from('settings').select('*').single();
+    if (error || !data) return { platformName: 'Rede Social EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10 };
     return { platformName: data.platform_name, xpPerPost: data.xp_per_post, xpPerComment: data.xp_per_comment, xpPerLikeReceived: data.xp_per_like, coinsPerPost: data.coins_per_post };
   },
 
   saveSettings: async (settings: AppSettings) => {
-      await supabase.from('settings').upsert({ id: 1, platform_name: settings.platformName, xp_per_post: settings.xpPerPost, xp_per_comment: settings.xpPerComment, xp_per_like: settings.xpPerLikeReceived, coins_per_post: settings.coinsPerPost });
+      const { error } = await supabase.from('settings').upsert({ id: 1, platform_name: settings.platformName, xp_per_post: settings.xpPerPost, xp_per_comment: settings.xpPerComment, xp_per_like: settings.xpPerLikeReceived, coins_per_post: settings.coinsPerPost });
+      if (error) throw error;
   },
 
   followUser: async (followerId: string, followingId: string) => {
     await supabase.from('follows').insert({ follower_id: followerId, following_id: followingId });
   },
 
-  signOut: async () => { localCache.clear(); await supabase.auth.signOut(); },
+  signOut: async () => { 
+    try {
+        localCache.clear(); 
+        await supabase.auth.signOut(); 
+    } catch (e) {
+        console.warn("Silent failure during signout", e);
+    }
+  },
   signIn: async (email: string, password: string) => await supabase.auth.signInWithPassword({ email, password }),
   signUp: async (email: string, password: string, metaData: any) => await supabase.auth.signUp({ email, password, options: { data: metaData } }),
   createProfile: async (id: string, email: string, name: string, role: string, avatarCor: string) => await supabase.from('users').insert({ id, email, name, role, avatar_cor: avatarCor, nivel: 1, xp: 0, xp_proximo_nivel: 1000, pontos_totais: 0, badges: [], status: 'active', posts_count: 0, likes_received: 0, streak: 0 })
