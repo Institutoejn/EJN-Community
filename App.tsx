@@ -3,13 +3,14 @@ import React, { useState, useEffect, Suspense, lazy } from 'react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
-import ErrorBoundary from './components/ErrorBoundary'; // Error Boundary
+import BottomNav from './components/BottomNav'; // Importando a nova barra
+import ErrorBoundary from './components/ErrorBoundary';
 import { User, AppView } from './types';
 import { storage } from './services/storage';
 import { supabase } from './services/supabase';
 import { Icons } from './constants';
 
-// --- LAZY LOADING (Code Splitting) ---
+// --- LAZY LOADING ---
 const Feed = lazy(() => import('./components/Feed'));
 const Profile = lazy(() => import('./components/Profile'));
 const Ranking = lazy(() => import('./components/Ranking'));
@@ -113,7 +114,6 @@ const App: React.FC = () => {
         setCurrentUser(null);
         localStorage.clear();
         sessionStorage.clear();
-        // Redirecionamento forçado para garantir que a sessão foi encerrada em todos os níveis
         window.location.href = window.location.origin;
     } catch (error) {
         console.error("Erro ao sair:", error);
@@ -155,25 +155,6 @@ const App: React.FC = () => {
     );
   }
 
-  if (loadingError) {
-    return (
-      <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center p-6 text-center">
-        <div className="bg-white p-8 rounded-3xl apple-shadow max-w-sm w-full animate-fadeIn">
-           <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Icons.X className="w-8 h-8" />
-           </div>
-           <h2 className="text-xl font-bold text-apple-text mb-2">Erro de Conexão</h2>
-           <button 
-             onClick={() => window.location.reload()}
-             className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors mb-3"
-           >
-             Tentar Novamente
-           </button>
-        </div>
-      </div>
-    );
-  }
-
   if (!currentUser) {
     return <Auth onLoginSuccess={handleLoginSuccess} />;
   }
@@ -183,6 +164,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-apple-bg selection:bg-ejn-gold selection:text-ejn-dark relative font-sans pb-20 lg:pb-0">
+        {/* Drawer Mobile (Lateral) - Mantido para funções extras e Admin */}
         {isMobileMenuOpen && (
           <div 
             className="fixed inset-0 bg-black/30 backdrop-blur-md z-[100] transition-opacity duration-300 lg:hidden"
@@ -195,34 +177,19 @@ const App: React.FC = () => {
           ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         `}>
           <div className="flex justify-between items-center mb-8">
-            <div className="font-bold text-xl tracking-tight text-apple-text">Menu</div>
+            <div className="font-bold text-xl tracking-tight text-apple-text">Opções</div>
             <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-apple-border/20 rounded-full text-apple-secondary hover:text-apple-text apple-transition">
               <Icons.X />
             </button>
           </div>
           
           <div className="space-y-2 mb-8">
-             {[
-               { id: 'FEED', label: 'Feed', icon: <Icons.Home /> },
-               { id: 'PROFILE', label: 'Perfil', icon: <Icons.User /> },
-               { id: 'RANKING', label: 'Ranking', icon: <Icons.Trophy /> },
-               { id: 'MISSIONS', label: 'Missões', icon: <Icons.Award /> },
-             ].map((item) => (
-               <button
-                 key={item.id}
-                 onClick={() => { setCurrentView(item.id as AppView); setIsMobileMenuOpen(false); }}
-                 className={`w-full px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 apple-transition ${currentView === item.id ? 'bg-ejn-gold text-ejn-dark' : 'bg-white text-apple-secondary'}`}
-               >
-                 {item.icon} {item.label}
-               </button>
-             ))}
-             
              {currentUser.role === 'gestor' && (
                <button
                  onClick={() => { setCurrentView('ADMIN'); setIsMobileMenuOpen(false); }}
-                 className={`w-full px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 apple-transition ${currentView === 'ADMIN' ? 'bg-ejn-dark text-white' : 'bg-white text-ejn-dark border border-ejn-dark/10'}`}
+                 className={`w-full px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 apple-transition ${currentView === 'ADMIN' ? 'bg-ejn-dark text-white' : 'bg-white text-ejn-dark border border-ejn-dark/10 shadow-sm'}`}
                >
-                 <Icons.Edit className="w-5 h-5" /> Painel Gestor
+                 <Icons.Edit className="w-5 h-5" /> Painel do Gestor
                </button>
              )}
           </div>
@@ -237,7 +204,10 @@ const App: React.FC = () => {
           onToggleMenu={() => setIsMobileMenuOpen(true)}
         />
         
-        <main className="max-w-[1600px] mx-auto px-4 pt-20 md:pt-24 md:px-8 pb-8">
+        {/* Barra de Navegação Inferior (Exclusiva Mobile) */}
+        {!isAdminView && <BottomNav currentView={currentView} setView={setCurrentView} user={currentUser} />}
+
+        <main className="max-w-[1600px] mx-auto px-4 pt-20 md:pt-24 md:px-8 pb-24 md:pb-8">
           <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-start justify-center">
             {!isAdminView && (
               <div className="hidden lg:block lg:w-[240px] xl:w-[280px] lg:sticky lg:top-24 flex-shrink-0">
