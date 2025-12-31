@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { AuthView, User } from '../types';
 import { storage } from '../services/storage';
+import { AVATAR_COLORS } from '../constants';
 
 interface AuthProps {
   onLoginSuccess: (user: User) => void;
@@ -23,42 +24,51 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
 
     try {
       if (view === AuthView.REGISTER) {
-        // Cadastro Supabase
+        // Cadastro Supabase com Metadata
+        const avatarCor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
         const { data, error } = await storage.signUp(email, password, {
             name: name,
-            role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno'
+            role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno',
+            avatarCor: avatarCor
         });
 
         if (error) throw error;
         
-        // Login automático após registro (se auto-confirm não estiver ativo, avisar usuário)
+        // Verifica se logou automaticamente
         if (data.user) {
-           // Pequeno delay para trigger do banco criar o perfil público
-           await new Promise(r => setTimeout(r, 2000));
+           // Pequeno delay para garantir que o Trigger do Banco criou o perfil público
+           await new Promise(r => setTimeout(r, 1500));
+           
            const user = await storage.getCurrentUser();
-           if(user) onLoginSuccess(user);
-           else {
-               // Fallback: faz login
+           if(user) {
+               onLoginSuccess(user);
+           } else {
+               // Fallback: Tenta login manual se a sessão não persistiu
                const { error: loginErr } = await storage.signIn(email, password);
-               if(loginErr) throw loginErr;
-               const fetchedUser = await storage.getCurrentUser();
-               if(fetchedUser) onLoginSuccess(fetchedUser);
+               if(!loginErr) {
+                   const fetchedUser = await storage.getCurrentUser();
+                   if(fetchedUser) onLoginSuccess(fetchedUser);
+               }
            }
+        } else {
+            // Caso o Supabase exija confirmação de email
+            alert('Cadastro realizado! Verifique seu e-mail para confirmar a conta.');
+            setView(AuthView.LOGIN);
         }
 
       } else {
         // Login Supabase
         const { error } = await storage.signIn(email, password);
-        if (error) throw new Error('E-mail ou senha inválidos.');
+        if (error) throw new Error('E-mail ou senha incorretos.');
         
         const user = await storage.getCurrentUser();
-        if (!user) throw new Error('Perfil de usuário não encontrado.');
-        if (user.status === 'suspended') throw new Error('Conta suspensa.');
+        if (!user) throw new Error('Perfil ainda não criado. Tente novamente em alguns segundos.');
+        if (user.status === 'suspended') throw new Error('Esta conta está suspensa.');
         
         onLoginSuccess(user);
       }
     } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro.');
+      setError(err.message || 'Ocorreu um erro inesperado.');
     } finally {
       setLoading(false);
     }

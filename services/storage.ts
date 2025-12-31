@@ -22,11 +22,11 @@ const mapUser = (dbUser: any): User => ({
   coverUrl: dbUser.cover_url,
   postsCount: dbUser.posts_count,
   likesReceived: dbUser.likes_received,
-  commentsCount: 0, // Calculado via query se necessário
+  commentsCount: 0,
   streak: dbUser.streak,
-  followersCount: 0, // Implementar tabela follows se desejar contagem real
+  followersCount: 0, 
   followingCount: 0,
-  followingIds: [], // Implementar tabela follows
+  followingIds: [], 
   status: dbUser.status as 'active' | 'suspended'
 });
 
@@ -56,7 +56,7 @@ export const storage = {
     mappedUser.followingIds = following ? following.map((f: any) => f.following_id) : [];
     mappedUser.followingCount = mappedUser.followingIds.length;
     
-    // Buscar contagem de seguidores
+    // Buscar contagem de seguidores (Count Query)
     const { count } = await supabase
       .from('follows')
       .select('*', { count: 'exact', head: true })
@@ -77,27 +77,21 @@ export const storage = {
   },
 
   saveUser: async (user: User) => {
-    // Mapear de volta para snake_case
     const dbUser = {
-      id: user.id,
       name: user.name,
-      // email: user.email, // Email gerido pelo Auth
-      role: user.role,
-      nivel: user.nivel,
-      xp: user.xp,
-      xp_proximo_nivel: user.xpProximoNivel,
-      pontos_totais: user.pontosTotais,
-      badges: user.badges,
-      avatar_cor: user.avatarCor,
+      // role, nivel, etc são geralmente geridos pelo backend, 
+      // mas permitindo update aqui para manter lógica atual do front
       bio: user.bio,
       location: user.location,
       website: user.website,
       avatar_url: user.avatarUrl,
       cover_url: user.coverUrl,
-      posts_count: user.postsCount,
+      // Campos de gamificação só devem ser atualizados via lógica de missão/post, 
+      // mas mantendo compatibilidade:
+      xp: user.xp,
+      pontos_totais: user.pontosTotais,
       likes_received: user.likesReceived,
-      streak: user.streak,
-      status: user.status
+      posts_count: user.postsCount
     };
 
     const { error } = await supabase.from('users').update(dbUser).eq('id', user.id);
@@ -139,7 +133,7 @@ export const storage = {
       content: p.content,
       imageUrl: p.image_url,
       timestamp: p.created_at,
-      likes: p.likes, // O count simples da tabela ou count da relação
+      likes: p.likes, 
       isPinned: p.is_pinned,
       likedByMe: currentUserId ? p.likes.some((l: any) => l.user_id === currentUserId) : false,
       comments: p.comments.map((c: any) => ({
@@ -155,16 +149,19 @@ export const storage = {
   },
 
   savePost: async (post: Post) => {
-    // Inserir novo post
-    if (!post.id || post.id.length < 10) { // Check simples se é ID novo
+    if (!post.id || post.id.length < 10) { 
+        // Insert
         const { error } = await supabase.from('posts').insert({
             user_id: post.userId,
             content: post.content,
             image_url: post.imageUrl
         });
+        
+        // Trigger de likes/posts count roda no banco
+        
         if (error) console.error("Erro ao criar post", error);
     } else {
-        // Atualizar existente (ex: pin)
+        // Update (ex: pin)
         const { error } = await supabase.from('posts').update({
             is_pinned: post.isPinned,
             content: post.content
@@ -180,19 +177,11 @@ export const storage = {
       if (data) {
           // Remover Like
           await supabase.from('likes').delete().eq('id', data.id);
-          // Decrementar contador no post (opcional, pode ser trigger no banco)
-          await supabase.rpc('decrement_likes', { row_id: postId }); 
-          // NOTA: Para simplificar sem criar funções RPC SQL complexas agora, 
-          // vamos confiar no client update ou refresh. 
-          // O ideal é usar triggers SQL para contadores.
-          // Fallback manual update:
-          const { data: p } = await supabase.from('posts').select('likes').eq('id', postId).single();
-          if(p) await supabase.from('posts').update({ likes: Math.max(0, p.likes - 1) }).eq('id', postId);
+          // Trigger DB atualiza contadores automaticamente
       } else {
           // Adicionar Like
           await supabase.from('likes').insert({ post_id: postId, user_id: userId });
-          const { data: p } = await supabase.from('posts').select('likes').eq('id', postId).single();
-          if(p) await supabase.from('posts').update({ likes: p.likes + 1 }).eq('id', postId);
+          // Trigger DB atualiza contadores automaticamente
       }
   },
 
@@ -249,10 +238,8 @@ export const storage = {
           follower_id: followerId,
           following_id: followingId
       });
-      if(!error) {
-          // Atualizar XP por networking (exemplo)
-          // Isso deveria ser idealmente no backend/trigger
-      }
+      // Trigger ou lógica adicional de XP pode ser adicionada aqui se necessário
+      if(error) console.error("Erro ao seguir", error);
   },
 
   // --- SETTINGS ---
@@ -270,16 +257,14 @@ export const storage = {
         platformName: data.platform_name,
         xpPerPost: data.xp_per_post,
         xpPerComment: data.xp_per_comment,
-        xpPerLikeReceived: 0, // Campo não estava no SQL inicial, ajustado
+        xpPerLikeReceived: 5, 
         coinsPerPost: data.coins_per_post
     };
   },
 
-  // Métodos de Admin para Salvar/Criar (Simplificados)
   saveMissions: async (missions: Mission[]) => {
-      // Upsert logic map back to snake_case
       const dbMissions = missions.map(m => ({
-          id: m.id.includes('-') ? m.id : undefined, // Se tem hifen é UUID, senao é temp ID, deixa criar novo
+          id: m.id.includes('-') ? m.id : undefined, 
           title: m.title,
           description: m.desc,
           reward_xp: m.rewardXP,
