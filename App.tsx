@@ -10,6 +10,7 @@ import Auth from './components/Auth';
 import AdminPanel from './components/AdminPanel';
 import { User, AppView } from './types';
 import { storage } from './services/storage';
+import { supabase } from './services/supabase';
 import { Icons } from './constants';
 
 const App: React.FC = () => {
@@ -19,30 +20,32 @@ const App: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const user = await storage.getCurrentUser();
-        if (user) {
-          if (!user.followingIds) user.followingIds = [];
-          setCurrentUser(user);
-        }
-      } catch (error) {
-        console.error("Erro ao verificar sessão", error);
-      } finally {
+    // Verificar sessão inicial
+    storage.getCurrentUser().then(user => {
+        if (user) setCurrentUser(user);
         setLoading(false);
-      }
-    };
-    checkSession();
+    });
+
+    // Listener de Auth do Supabase
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+            const user = await storage.getCurrentUser();
+            setCurrentUser(user);
+        } else if (event === 'SIGNED_OUT') {
+            setCurrentUser(null);
+        }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleLoginSuccess = (user: User) => {
-    storage.setCurrentUser(user);
     setCurrentUser(user);
     setCurrentView('FEED');
   };
 
-  const handleLogout = () => {
-    storage.setCurrentUser(null);
+  const handleLogout = async () => {
+    await storage.signOut();
     setCurrentUser(null);
     setCurrentView('FEED');
     setIsMobileMenuOpen(false);
@@ -50,12 +53,16 @@ const App: React.FC = () => {
 
   const handleUpdateUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
-    storage.saveUser(updatedUser); // Agora async fire-and-forget
+    // Storage já é chamado dentro dos componentes quando necessário, 
+    // mas atualização de estado local é importante para reatividade imediata
   };
 
-  const handleFollowUser = (targetId: string) => {
+  const handleFollowUser = async (targetId: string) => {
     if (!currentUser || currentUser.id === targetId) return;
     if (currentUser.followingIds.includes(targetId)) return;
+
+    // Call storage
+    await storage.followUser(currentUser.id, targetId);
 
     const updatedUser: User = {
       ...currentUser,

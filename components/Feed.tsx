@@ -23,20 +23,21 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Carregar posts ao montar o componente
-  useEffect(() => {
-    const fetchPosts = async () => {
-      setLoadingPosts(true);
+  const fetchPosts = async () => {
       const savedPosts = await storage.getPosts();
       setPosts(savedPosts);
       setLoadingPosts(false);
-    };
+  };
+
+  useEffect(() => {
     fetchPosts();
   }, []);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Nota: Em prod, usar Supabase Storage para upload real.
+      // Aqui mantendo base64 por simplicidade de migração imediata conforme solicitado
       const reader = new FileReader();
       reader.onloadend = () => {
         setSelectedImage(reader.result as string);
@@ -49,24 +50,20 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     e.preventDefault();
     if (!newPost.trim() && !selectedImage) return;
 
-    const post: Post = {
-        id: Math.random().toString(36).substring(7),
+    // Criar post
+    await storage.savePost({
         userId: user.id,
         userName: user.name,
         content: newPost,
-        timestamp: new Date().toISOString(),
-        likes: 0,
-        likedByMe: false,
         imageUrl: selectedImage || undefined,
-        comments: []
-    };
-    
-    // Atualização otimista
-    const updatedPosts = [post, ...posts];
-    setPosts(updatedPosts);
-    
-    // Salvar no banco
-    await storage.savePost(post); 
+        comments: [], // Supabase preenche isso
+        likes: 0,
+        timestamp: new Date().toISOString(),
+        id: '' // Será gerado pelo banco
+    });
+
+    // Refresh no feed
+    await fetchPosts();
 
     setNewPost('');
     setSelectedImage(null);
@@ -75,33 +72,32 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     setXpAmount(bonus);
     setShowXpGain(true);
     
+    // Atualizar UI do usuário (idealmente sync com backend também)
     const updatedUser = { 
       ...user, 
       xp: user.xp + bonus, 
       postsCount: (user.postsCount || 0) + 1 
     };
     onUpdateUser(updatedUser);
+    await storage.saveUser(updatedUser);
 
     setTimeout(() => setShowXpGain(false), 2000);
   };
 
   const handleLike = async (postId: string) => {
-    // Atualização otimista
-    const updatedPosts = posts.map(post => {
-      if (post.id === postId) {
-        const isLiked = !post.likedByMe;
-        return {
-          ...post,
-          likedByMe: isLiked,
-          likes: isLiked ? post.likes + 1 : post.likes - 1
-        };
-      }
-      return post;
-    });
-    
-    setPosts(updatedPosts);
-    // Salvar estado completo dos posts (para simplificar sincronia de likes neste protótipo)
-    await storage.updatePosts(updatedPosts);
+    // Optimistic Update
+    setPosts(current => current.map(p => {
+        if(p.id === postId) {
+            return {
+                ...p,
+                likedByMe: !p.likedByMe,
+                likes: p.likedByMe ? p.likes - 1 : p.likes + 1
+            };
+        }
+        return p;
+    }));
+
+    await storage.toggleLike(postId, user.id);
   };
 
   const toggleComments = (postId: string) => {
@@ -115,30 +111,15 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
-    const newComment: Comment = {
-      id: Math.random().toString(36).substring(7),
-      userName: user.name,
-      avatarUrl: user.avatarUrl,
-      avatarCor: user.avatarCor,
-      text: text.trim(),
-      timestamp: new Date().toISOString()
-    };
-
-    const updatedPosts = posts.map(post => {
-      if (post.id === postId) {
-        return {
-          ...post,
-          comments: [...(post.comments || []), newComment]
-        };
-      }
-      return post;
-    });
-
-    setPosts(updatedPosts);
-    await storage.updatePosts(updatedPosts);
+    await storage.addComment(postId, user.id, text);
+    
+    // Refresh posts para pegar o novo comentário
+    // Em app real, usaríamos Supabase Realtime subscriptions
+    await fetchPosts();
 
     setCommentInputs({ ...commentInputs, [postId]: '' });
     onUpdateUser({ ...user, xp: user.xp + 5 });
+    await storage.saveUser({ ...user, xp: user.xp + 5 });
   };
 
   const removeSelectedImage = () => {
@@ -228,7 +209,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 <div className="flex items-center gap-3 mb-4">
                   <Avatar 
                     name={post.userName} 
-                    bgColor="bg-apple-border" 
+                    bgColor={post.avatarCor || 'bg-gray-400'} 
+                    url={post.avatarUrl}
                     size="xs" 
                     className="!text-apple-secondary" 
                   />

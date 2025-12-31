@@ -6,12 +6,15 @@ export interface Comment {
   avatarCor: string;
   text: string;
   timestamp: string;
+  userId: string; // Adicionado para referência
 }
 
 export interface Post {
   id: string;
   userId: string;
   userName: string;
+  avatarUrl?: string; // Adicionado para facilitar renderização
+  avatarCor?: string; // Adicionado para facilitar renderização
   content: string;
   timestamp: string;
   likes: number;

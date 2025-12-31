@@ -2,7 +2,6 @@
 import React, { useState } from 'react';
 import { AuthView, User } from '../types';
 import { storage } from '../services/storage';
-import { AVATAR_COLORS, INITIAL_XP_TARGET } from '../constants';
 
 interface AuthProps {
   onLoginSuccess: (user: User) => void;
@@ -23,51 +22,43 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
     setError('');
 
     try {
-      const users = await storage.getUsers();
-
       if (view === AuthView.REGISTER) {
-        if (users.find(u => u.email === email)) {
-          throw new Error('E-mail já cadastrado.');
+        // Cadastro Supabase
+        const { data, error } = await storage.signUp(email, password, {
+            name: name,
+            role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno'
+        });
+
+        if (error) throw error;
+        
+        // Login automático após registro (se auto-confirm não estiver ativo, avisar usuário)
+        if (data.user) {
+           // Pequeno delay para trigger do banco criar o perfil público
+           await new Promise(r => setTimeout(r, 2000));
+           const user = await storage.getCurrentUser();
+           if(user) onLoginSuccess(user);
+           else {
+               // Fallback: faz login
+               const { error: loginErr } = await storage.signIn(email, password);
+               if(loginErr) throw loginErr;
+               const fetchedUser = await storage.getCurrentUser();
+               if(fetchedUser) onLoginSuccess(fetchedUser);
+           }
         }
 
-        const newUser: User = {
-          id: Math.random().toString(36).substring(2, 6).toUpperCase(),
-          name,
-          email,
-          role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno',
-          nivel: 1,
-          xp: 0,
-          xpProximoNivel: INITIAL_XP_TARGET,
-          pontosTotais: 100,
-          badges: ['Pioneiro EJN'],
-          dataCriacao: new Date().toISOString(),
-          avatarCor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
-          postsCount: 0,
-          likesReceived: 0,
-          commentsCount: 0,
-          streak: 1,
-          followersCount: 0,
-          followingCount: 0,
-          followingIds: [],
-          status: 'active'
-        };
-
-        await storage.saveUser(newUser);
-        onLoginSuccess(newUser);
       } else {
-        const user = users.find(u => u.email === email);
-        // Em um app real, verificaríamos senha. Aqui estamos simulando com o email.
-        if (!user) throw new Error('Usuário não encontrado.');
-        if (user.status === 'suspended') throw new Error('Esta conta está suspensa por moderação.');
+        // Login Supabase
+        const { error } = await storage.signIn(email, password);
+        if (error) throw new Error('E-mail ou senha inválidos.');
         
-        // Correções defensivas
-        if (!user.followingIds) user.followingIds = [];
-        if (!user.role) user.role = 'aluno';
+        const user = await storage.getCurrentUser();
+        if (!user) throw new Error('Perfil de usuário não encontrado.');
+        if (user.status === 'suspended') throw new Error('Conta suspensa.');
         
         onLoginSuccess(user);
       }
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'Ocorreu um erro.');
     } finally {
       setLoading(false);
     }
@@ -118,6 +109,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
               <input
                 type="password"
                 required
+                minLength={6}
                 className="w-full h-12 px-5 bg-apple-bg border border-apple-border rounded-xl focus:ring-0 focus:outline-none font-medium text-sm"
                 placeholder="••••••••"
                 value={password}
