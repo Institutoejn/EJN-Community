@@ -24,17 +24,20 @@ const App: React.FC = () => {
     let mounted = true;
 
     const initApp = async () => {
-      // Define uma promessa de timeout que 'desiste' suavemente após 15 segundos
+      // FAST TRACK: Timeout reduzido para 5 segundos conforme solicitado.
+      // Se a conexão for muito lenta, liberamos a interface para o usuário tentar novamente.
       const timeoutPromise = new Promise((resolve) => 
-        setTimeout(() => resolve({ timeout: true }), 15000)
+        setTimeout(() => resolve({ timeout: true }), 5000)
       );
 
-      // Define a promessa de carregamento real
+      // Carregamento real
       const loadPromise = (async () => {
         try {
+          // Check de sessão é local e instantâneo
           const { data: { session }, error } = await supabase.auth.getSession();
           if (error || !session) return { user: null };
 
+          // Busca otimizada de usuário
           const user = await storage.getCurrentUser();
           return { user };
         } catch (err) {
@@ -43,33 +46,28 @@ const App: React.FC = () => {
         }
       })();
 
-      // Corrida: quem terminar primeiro decide o fluxo
+      // Corrida: Carregamento vs 5 segundos
       const result: any = await Promise.race([loadPromise, timeoutPromise]);
 
       if (!mounted) return;
 
       if (result.timeout) {
-        console.warn("Timeout suave: O banco demorou para responder. Liberando interface para Login.");
-        // Não mostramos erro, apenas paramos de carregar.
-        // Se o usuário não foi setado, vai cair na tela de Auth, o que é um fallback seguro.
+        console.warn("Fast Timeout: Banco demorou mais que 5s. Liberando interface.");
         setLoading(false);
         return;
       }
 
       if (result.error) {
-        // Erro real de código ou conexão grave
         setLoadingError(true);
         setLoading(false);
         return;
       }
 
-      // Sucesso
       if (result.user) {
         setCurrentUser(result.user);
         setLoadingError(false);
       }
-      // Se result.user for null (sem sessão), apenas removemos o loading
-      // e o componente renderiza o Auth automaticamente abaixo.
+      
       setLoading(false);
     };
 
@@ -83,7 +81,6 @@ const App: React.FC = () => {
           setLoading(false);
         }
       } else if (event === 'SIGNED_IN' && session && !currentUser) {
-         // Recuperação silenciosa se o usuário logar e o state estiver vazio
          const user = await storage.getCurrentUser();
          if (mounted && user) setCurrentUser(user);
       }
@@ -109,13 +106,11 @@ const App: React.FC = () => {
     } catch (error) {
         console.error("Erro ao sair:", error);
     }
-    // Limpeza completa do estado
     setCurrentUser(null);
     setCurrentView('FEED');
     setIsMobileMenuOpen(false);
     setLoadingError(false);
     setLoading(false);
-    // Força recarregamento limpo para limpar cache do navegador se necessário
     window.location.reload(); 
   };
 
@@ -149,9 +144,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
-        <p className="text-xs font-bold text-apple-tertiary uppercase tracking-widest animate-pulse">
-           Carregando Rede EJN...
-        </p>
+        {/* Removido texto pulsante para visual mais limpo e rápido */}
       </div>
     );
   }
@@ -164,15 +157,15 @@ const App: React.FC = () => {
            <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
               <Icons.X className="w-8 h-8" />
            </div>
-           <h2 className="text-xl font-bold text-apple-text mb-2">Erro de Sistema</h2>
+           <h2 className="text-xl font-bold text-apple-text mb-2">Erro de Conexão</h2>
            <p className="text-sm text-apple-secondary mb-6">
-             Ocorreu um erro inesperado ao carregar.
+             O sistema não respondeu a tempo.
            </p>
            <button 
              onClick={() => window.location.reload()}
              className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors mb-3"
            >
-             Recarregar
+             Tentar Novamente
            </button>
            <button 
              onClick={async () => {
@@ -181,7 +174,7 @@ const App: React.FC = () => {
              }}
              className="w-full py-3 bg-transparent text-apple-secondary border border-apple-border rounded-xl font-bold uppercase tracking-widest hover:bg-apple-bg transition-colors"
            >
-             Sair / Login
+             Sair
            </button>
         </div>
       </div>

@@ -38,8 +38,8 @@ export const storage = {
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error || !session) return null;
 
-        // 1. DADOS CRÍTICOS: Perfil do usuário
-        // Se isso falhar, o app não deve carregar
+        // 1. FAST TRACK: Buscar APENAS o perfil primeiro
+        // Esta query é leve e deve retornar em < 500ms
         const { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
@@ -53,14 +53,19 @@ export const storage = {
 
         const mappedUser = mapUser(profile);
 
-        // 2. DADOS NÃO-CRÍTICOS: Seguidores/Seguindo
-        // Se isso falhar, não tem problema, carregamos o usuário com 0 seguidores
-        // para não travar o app (Graceful Degradation)
+        // 2. LAZY LOAD DE SEGUIDORES (Com Timeout Rápido)
+        // Tentamos buscar seguidores, mas se demorar mais de 2s, desistimos
+        // e retornamos o usuário sem estatísticas para não travar o app.
         try {
-            const [followingResult, followersResult] = await Promise.all([
+            const secondaryDataPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
                 supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
             ]);
+
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject('timeout'), 2000));
+
+            // Corrida: Dados vs 2 segundos
+            const [followingResult, followersResult] = await Promise.race([secondaryDataPromise, timeoutPromise]) as any;
 
             const following = followingResult.data;
             mappedUser.followingIds = following ? following.map((f: any) => f.following_id) : [];
@@ -68,8 +73,12 @@ export const storage = {
             mappedUser.followersCount = followersResult.count || 0;
 
         } catch (secondaryError) {
-            console.warn("Falha ao carregar dados secundários (seguidores). Ignorando.", secondaryError);
-            // Mantém os defaults zerados definidos no mapUser
+            if (secondaryError === 'timeout') {
+                console.warn("Skipping followers load due to timeout (Fast Load optimization)");
+            } else {
+                console.warn("Error loading secondary stats", secondaryError);
+            }
+            // Mantém os defaults zerados
         }
 
         return mappedUser;
