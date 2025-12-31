@@ -1,7 +1,7 @@
 
-import React, { useState } from 'react';
-import { User } from '../types';
-import { Icons } from '../constants';
+import React, { useState, useEffect } from 'react';
+import { User, Mission, RewardItem } from '../types';
+import { storage } from '../services/storage';
 
 interface MissionsProps {
   user: User;
@@ -10,82 +10,49 @@ interface MissionsProps {
 
 type Tab = 'TASKS' | 'REWARDS';
 
-interface Reward {
-  id: string;
-  title: string;
-  cost: number;
-  desc: string;
-  longDesc: string;
-  icon: string;
-  imageUrl: string;
-}
-
 const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
   const [activeTab, setActiveTab] = useState<Tab>('TASKS');
   const [claiming, setClaiming] = useState<string | null>(null);
-  const [selectedReward, setSelectedReward] = useState<Reward | null>(null);
+  const [selectedReward, setSelectedReward] = useState<RewardItem | null>(null);
+  const [missions, setMissions] = useState<Mission[]>([]);
+  const [rewards, setRewards] = useState<RewardItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const missions = [
-    { id: 'm1', title: 'Primeiro Passo', desc: 'Complete seu perfil com bio e localização.', reward: 150, points: 50, icon: '👤', status: user.bio ? 'CONCLUÍDA' : 'PENDENTE' },
-    { id: 'm2', title: 'Networking Ativo', desc: 'Faça sua primeira publicação no feed.', reward: 200, points: 100, icon: '📢', status: user.postsCount > 0 ? 'CONCLUÍDA' : 'PENDENTE' },
-    { id: 'm3', title: 'Engajador', desc: 'Curta 5 publicações de outros colegas.', reward: 100, points: 30, icon: '❤️', status: 'PENDENTE' },
-    { id: 'm4', title: 'Mestre do Pitch', desc: 'Receba 10 curtidas em uma única publicação.', reward: 500, points: 200, icon: '🔥', status: 'PENDENTE' },
-  ];
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      const [m, r] = await Promise.all([
+        storage.getMissions(),
+        storage.getRewards()
+      ]);
+      setMissions(m);
+      setRewards(r);
+      setLoading(false);
+    };
+    loadData();
+  }, []);
 
-  const rewards: Reward[] = [
-    { 
-      id: 'r1', 
-      title: 'Mentoria Express', 
-      cost: 1500, 
-      desc: '15 minutos de call estratégica com um mentor EJN.', 
-      longDesc: 'Uma oportunidade exclusiva de tirar suas dúvidas diretamente com um mentor experiente do Instituto. Ideal para destravar processos de vendas, validar ideias de produto ou receber feedback sobre seu pitch de negócios.',
-      icon: '📞',
-      imageUrl: 'https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&q=80&w=400'
-    },
-    { 
-      id: 'r2', 
-      title: 'Badge de Destaque', 
-      cost: 500, 
-      desc: 'Badge exclusiva "Acelerado" no seu perfil.', 
-      longDesc: 'Destaque-se na multidão! Esta badge dourada aparecerá ao lado do seu nome em todas as suas publicações e no seu perfil, sinalizando para toda a rede que você é um membro altamente ativo e engajado.',
-      icon: '✨',
-      imageUrl: 'https://images.unsplash.com/photo-1579546678181-9822b9518301?auto=format&fit=crop&q=80&w=400'
-    },
-    { 
-      id: 'r3', 
-      title: 'Análise de LinkedIn', 
-      cost: 2500, 
-      desc: 'Revisão completa do seu perfil profissional.', 
-      longDesc: 'O LinkedIn é sua vitrine para o mundo. Nossa equipe de especialistas fará uma auditoria completa no seu perfil, sugerindo melhorias na sua headline, bio, experiência e estratégia de conteúdo para atrair mais investidores e parceiros.',
-      icon: '👔',
-      imageUrl: 'https://images.unsplash.com/photo-1611944212129-29977ae1398c?auto=format&fit=crop&q=80&w=400'
-    },
-    { 
-      id: 'r4', 
-      title: 'Ingresso Workshop', 
-      cost: 4000, 
-      desc: 'Acesso ao próximo workshop presencial da EJN.', 
-      longDesc: 'Garanta seu lugar na primeira fila! Resgate este brinde para ganhar um ingresso VIP para o nosso próximo evento presencial. Networking de alto nível, palestras exclusivas e happy hour com grandes players do mercado.',
-      icon: '🎟️',
-      imageUrl: 'https://images.unsplash.com/photo-1540575861501-7ad0582373f2?auto=format&fit=crop&q=80&w=400'
-    },
-  ];
-
-  const handleClaim = (mission: any) => {
-    if (mission.status === 'CONCLUÍDA' || claiming) return;
+  const handleClaim = (mission: Mission) => {
+    // Simplificação: no mundo real, teríamos uma tabela de 'user_missions' para trackear status
+    // Aqui vamos assumir que se o usuário tem os requisitos (mockados), ele pode clamar
+    if (claiming) return;
     
     setClaiming(mission.id);
-    setTimeout(() => {
-      onUpdateUser({
+    setTimeout(async () => {
+      const updatedUser = {
         ...user,
-        xp: user.xp + mission.reward,
-        pontosTotais: user.pontosTotais + mission.points
-      });
+        xp: user.xp + mission.rewardXP,
+        pontosTotais: user.pontosTotais + mission.rewardCoins
+      };
+      
+      onUpdateUser(updatedUser);
+      // Persistir atualização
+      await storage.saveUser(updatedUser);
       setClaiming(null);
     }, 1000);
   };
 
-  const handleRedeem = (reward: Reward) => {
+  const handleRedeem = async (reward: RewardItem) => {
     if (user.pontosTotais < reward.cost) {
       alert('Saldo insuficiente de EJN Coins.');
       return;
@@ -93,14 +60,21 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
     
     const confirmRedeem = confirm(`Deseja trocar ${reward.cost} EJN Coins por "${reward.title}"?`);
     if (confirmRedeem) {
-      onUpdateUser({
+      const updatedUser = {
         ...user,
         pontosTotais: user.pontosTotais - reward.cost
-      });
+      };
+      
+      onUpdateUser(updatedUser);
+      await storage.saveUser(updatedUser);
       setSelectedReward(null);
       alert('Resgate solicitado com sucesso! Nossa equipe entrará em contato através do seu e-mail cadastrado.');
     }
   };
+
+  if (loading) {
+    return <div className="p-10 text-center text-apple-tertiary text-xs font-bold uppercase tracking-widest">Carregando desafios...</div>;
+  }
 
   return (
     <div className="w-full space-y-6 animate-fadeIn pb-10">
@@ -203,9 +177,10 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
             <div key={m.id} className="bg-white rounded-2xl p-5 apple-shadow flex flex-col justify-between group hover:scale-[1.02] apple-transition border border-apple-border/50">
               <div className="flex justify-between items-start mb-4">
                 <div className="w-12 h-12 bg-apple-bg rounded-2xl flex items-center justify-center text-2xl shadow-inner group-hover:bg-ejn-gold/10 apple-transition">{m.icon}</div>
+                {/* Mock status logic for demo purposes */}
                 <div className="text-right">
-                  <span className={`text-[10px] font-black px-2 py-1 rounded-md uppercase ${m.status === 'CONCLUÍDA' ? 'bg-green-100 text-green-600' : 'bg-apple-bg text-apple-tertiary'}`}>
-                    {m.status}
+                  <span className={`text-[10px] font-black px-2 py-1 rounded-md uppercase bg-apple-bg text-apple-tertiary`}>
+                    PENDENTE
                   </span>
                 </div>
               </div>
@@ -216,20 +191,20 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
               <div className="flex items-center justify-between mt-auto pt-4 border-t border-apple-bg">
                 <div className="flex gap-3">
                   <div className="text-center">
-                    <p className="text-[10px] font-black text-ejn-medium">+{m.reward}</p>
+                    <p className="text-[10px] font-black text-ejn-medium">+{m.rewardXP}</p>
                     <p className="text-[8px] font-bold text-apple-tertiary uppercase">XP</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-[10px] font-black text-ejn-gold">+{m.points}</p>
+                    <p className="text-[10px] font-black text-ejn-gold">+{m.rewardCoins}</p>
                     <p className="text-[8px] font-bold text-apple-tertiary uppercase text-[7px]">EJN Coins</p>
                   </div>
                 </div>
                 <button 
                   onClick={() => handleClaim(m)}
-                  disabled={m.status === 'CONCLUÍDA' || claiming === m.id}
-                  className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest apple-transition ${m.status === 'CONCLUÍDA' ? 'bg-apple-bg text-apple-tertiary cursor-not-allowed' : 'bg-ejn-dark text-white hover:bg-ejn-medium active:scale-95'}`}
+                  disabled={claiming === m.id}
+                  className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest apple-transition bg-ejn-dark text-white hover:bg-ejn-medium active:scale-95`}
                 >
-                  {claiming === m.id ? 'Resgatando...' : m.status === 'CONCLUÍDA' ? 'Coletado' : 'Resgatar'}
+                  {claiming === m.id ? 'Resgatando...' : 'Resgatar'}
                 </button>
               </div>
             </div>

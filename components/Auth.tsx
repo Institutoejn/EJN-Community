@@ -17,60 +17,60 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    setTimeout(() => {
-      try {
-        if (view === AuthView.REGISTER) {
-          const users = storage.getUsers();
-          if (users.find(u => u.email === email)) {
-            throw new Error('E-mail já cadastrado.');
-          }
+    try {
+      const users = await storage.getUsers();
 
-          const newUser: User = {
-            id: Math.random().toString(36).substring(2, 6).toUpperCase(),
-            name,
-            email,
-            role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno',
-            nivel: 1,
-            xp: 0,
-            xpProximoNivel: INITIAL_XP_TARGET,
-            pontosTotais: 100,
-            badges: ['Pioneiro EJN'],
-            dataCriacao: new Date().toISOString(),
-            avatarCor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
-            postsCount: 0,
-            likesReceived: 0,
-            commentsCount: 0,
-            streak: 1,
-            followersCount: 0,
-            followingCount: 0,
-            followingIds: [],
-            status: 'active'
-          };
-
-          storage.saveUser(newUser);
-          onLoginSuccess(newUser);
-        } else {
-          const users = storage.getUsers();
-          const user = users.find(u => u.email === email);
-          if (!user) throw new Error('Usuário não encontrado.');
-          if (user.status === 'suspended') throw new Error('Esta conta está suspensa por moderação.');
-          
-          if (!user.followingIds) user.followingIds = [];
-          if (!user.role) user.role = 'aluno';
-          
-          onLoginSuccess(user);
+      if (view === AuthView.REGISTER) {
+        if (users.find(u => u.email === email)) {
+          throw new Error('E-mail já cadastrado.');
         }
-      } catch (err: any) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
+
+        const newUser: User = {
+          id: Math.random().toString(36).substring(2, 6).toUpperCase(),
+          name,
+          email,
+          role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno',
+          nivel: 1,
+          xp: 0,
+          xpProximoNivel: INITIAL_XP_TARGET,
+          pontosTotais: 100,
+          badges: ['Pioneiro EJN'],
+          dataCriacao: new Date().toISOString(),
+          avatarCor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+          postsCount: 0,
+          likesReceived: 0,
+          commentsCount: 0,
+          streak: 1,
+          followersCount: 0,
+          followingCount: 0,
+          followingIds: [],
+          status: 'active'
+        };
+
+        await storage.saveUser(newUser);
+        onLoginSuccess(newUser);
+      } else {
+        const user = users.find(u => u.email === email);
+        // Em um app real, verificaríamos senha. Aqui estamos simulando com o email.
+        if (!user) throw new Error('Usuário não encontrado.');
+        if (user.status === 'suspended') throw new Error('Esta conta está suspensa por moderação.');
+        
+        // Correções defensivas
+        if (!user.followingIds) user.followingIds = [];
+        if (!user.role) user.role = 'aluno';
+        
+        onLoginSuccess(user);
       }
-    }, 1200);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

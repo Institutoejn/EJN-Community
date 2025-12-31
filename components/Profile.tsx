@@ -36,12 +36,15 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
     }
   };
 
-  const handleSave = () => {
-    storage.saveUser(editedUser);
-    storage.setCurrentUser(editedUser);
+  const handleSave = async () => {
+    // Atualização otimista na UI
     onUpdateUser(editedUser);
     setIsEditing(false);
     setMessage('Perfil atualizado com sucesso');
+    
+    // Persistência
+    await storage.saveUser(editedUser);
+    
     setTimeout(() => setMessage(''), 3000);
   };
 

@@ -19,12 +19,20 @@ const App: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    const savedUser = storage.getCurrentUser();
-    if (savedUser) {
-      if (!savedUser.followingIds) savedUser.followingIds = [];
-      setCurrentUser(savedUser);
-    }
-    setLoading(false);
+    const checkSession = async () => {
+      try {
+        const user = await storage.getCurrentUser();
+        if (user) {
+          if (!user.followingIds) user.followingIds = [];
+          setCurrentUser(user);
+        }
+      } catch (error) {
+        console.error("Erro ao verificar sessão", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    checkSession();
   }, []);
 
   const handleLoginSuccess = (user: User) => {
@@ -42,8 +50,7 @@ const App: React.FC = () => {
 
   const handleUpdateUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
-    storage.saveUser(updatedUser);
-    storage.setCurrentUser(updatedUser);
+    storage.saveUser(updatedUser); // Agora async fire-and-forget
   };
 
   const handleFollowUser = (targetId: string) => {

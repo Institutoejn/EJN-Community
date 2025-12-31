@@ -19,13 +19,19 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const [xpAmount, setXpAmount] = useState(50);
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
+  const [loadingPosts, setLoadingPosts] = useState(true);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Carregar posts ao montar o componente
   useEffect(() => {
-    const savedPosts = storage.getPosts();
-    setPosts(savedPosts);
+    const fetchPosts = async () => {
+      setLoadingPosts(true);
+      const savedPosts = await storage.getPosts();
+      setPosts(savedPosts);
+      setLoadingPosts(false);
+    };
+    fetchPosts();
   }, []);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -39,7 +45,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     }
   };
 
-  const handlePostSubmit = (e: React.FormEvent) => {
+  const handlePostSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPost.trim() && !selectedImage) return;
 
@@ -55,9 +61,12 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         comments: []
     };
     
+    // Atualização otimista
     const updatedPosts = [post, ...posts];
     setPosts(updatedPosts);
-    storage.savePost(post); 
+    
+    // Salvar no banco
+    await storage.savePost(post); 
 
     setNewPost('');
     setSelectedImage(null);
@@ -76,7 +85,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     setTimeout(() => setShowXpGain(false), 2000);
   };
 
-  const handleLike = (postId: string) => {
+  const handleLike = async (postId: string) => {
+    // Atualização otimista
     const updatedPosts = posts.map(post => {
       if (post.id === postId) {
         const isLiked = !post.likedByMe;
@@ -90,7 +100,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     });
     
     setPosts(updatedPosts);
-    storage.updatePosts(updatedPosts);
+    // Salvar estado completo dos posts (para simplificar sincronia de likes neste protótipo)
+    await storage.updatePosts(updatedPosts);
   };
 
   const toggleComments = (postId: string) => {
@@ -100,7 +111,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     setOpenComments(newOpen);
   };
 
-  const handleCommentSubmit = (postId: string) => {
+  const handleCommentSubmit = async (postId: string) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
@@ -117,14 +128,14 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
       if (post.id === postId) {
         return {
           ...post,
-          comments: [...post.comments, newComment]
+          comments: [...(post.comments || []), newComment]
         };
       }
       return post;
     });
 
     setPosts(updatedPosts);
-    storage.updatePosts(updatedPosts);
+    await storage.updatePosts(updatedPosts);
 
     setCommentInputs({ ...commentInputs, [postId]: '' });
     onUpdateUser({ ...user, xp: user.xp + 5 });
@@ -206,7 +217,12 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
       {/* Feed List */}
       <div className="space-y-4 md:space-y-6">
-        {posts.length > 0 ? (
+        {loadingPosts ? (
+           <div className="text-center py-10">
+              <div className="inline-block w-8 h-8 border-4 border-ejn-gold/30 border-t-ejn-gold rounded-full animate-spin"></div>
+              <p className="mt-2 text-xs font-bold text-apple-tertiary">Carregando feed...</p>
+           </div>
+        ) : posts.length > 0 ? (
           posts.map((post) => (
             <div key={post.id} className="bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition apple-shadow-hover animate-fadeIn">
                 <div className="flex items-center gap-3 mb-4">
@@ -277,14 +293,14 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                     <svg className="w-4 h-4 group-hover:scale-110 apple-transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                     </svg>
-                    <span>{post.comments.length > 0 ? `${post.comments.length} Comentários` : 'Comentário'}</span>
+                    <span>{(post.comments || []).length > 0 ? `${(post.comments || []).length} Comentários` : 'Comentário'}</span>
                   </button>
                 </div>
 
                 {/* Seção de Comentários */}
                 {openComments.has(post.id) && (
                   <div className="mt-4 pt-4 border-t border-apple-bg animate-fadeIn space-y-4">
-                    {post.comments.map(comment => (
+                    {(post.comments || []).map(comment => (
                       <div key={comment.id} className="flex gap-3">
                         <Avatar name={comment.userName} bgColor={comment.avatarCor} url={comment.avatarUrl} size="xs" />
                         <div className="flex-1 bg-apple-bg rounded-2xl px-4 py-2">

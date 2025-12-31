@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { User } from '../types';
 import Avatar from './Avatar';
+import { storage } from '../services/storage';
 
 interface RankingProps {
   user: User;
@@ -9,20 +10,40 @@ interface RankingProps {
 }
 
 const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
-  const leaderboard = [
-    { id: '1', name: 'Ana Silva', points: 15400, level: 12, avatarCor: 'bg-[#007AFF]', isCurrent: false },
-    { id: '2', name: 'Carlos Lima', points: 14200, level: 11, avatarCor: 'bg-[#FF3B30]', isCurrent: false },
-    { id: '3', name: 'Beatriz Santos', points: 12800, level: 9, avatarCor: 'bg-[#AF52DE]', isCurrent: false },
-    { id: user.id, name: user.name, points: user.pontosTotais, level: user.nivel, avatarCor: user.avatarCor, avatarUrl: user.avatarUrl, isCurrent: true },
-    { id: '4', name: 'Daniel Rocha', points: 9500, level: 7, avatarCor: 'bg-[#FF9500]', isCurrent: false },
-    { id: '5', name: 'Fernanda Souza', points: 8200, level: 6, avatarCor: 'bg-[#34C759]', isCurrent: false },
-  ].sort((a, b) => b.points - a.points);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchUsers = async () => {
+      setLoading(true);
+      const allUsers = await storage.getUsers();
+      
+      const ranked = allUsers
+        .sort((a, b) => b.pontosTotais - a.pontosTotais)
+        .map(u => ({
+          ...u,
+          isCurrent: u.id === user.id
+        }));
+      
+      setLeaderboard(ranked);
+      setLoading(false);
+    };
+    fetchUsers();
+  }, [user.id]);
 
   const top3 = leaderboard.slice(0, 3);
   
   const handleFollowClick = (targetId: string) => {
     if (onFollow) onFollow(targetId);
   };
+
+  if (loading) {
+     return (
+        <div className="w-full h-64 flex items-center justify-center">
+           <div className="w-8 h-8 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
+        </div>
+     );
+  }
 
   return (
     <div className="w-full space-y-6 md:space-y-8 animate-fadeIn pb-10">
@@ -49,7 +70,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-4 pb-2 px-2 text-center apple-shadow">
                <p className="text-[10px] font-bold text-apple-text truncate">{top3[1].name.split(' ')[0]}</p>
-               <p className="text-[9px] font-black text-ejn-medium">{top3[1].points.toLocaleString()} Coins</p>
+               <p className="text-[9px] font-black text-ejn-medium">{top3[1].pontosTotais.toLocaleString()} Coins</p>
             </div>
             <div className="bg-slate-200 h-8 md:h-16 w-full rounded-b-lg"></div>
           </div>
@@ -64,7 +85,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-6 pb-2 px-2 text-center apple-shadow border-x-2 border-t-2 border-ejn-gold/20">
                <p className="text-xs font-bold text-apple-text truncate">{top3[0].name.split(' ')[0]}</p>
-               <p className="text-xs font-black text-ejn-gold">{top3[0].points.toLocaleString()} Coins</p>
+               <p className="text-xs font-black text-ejn-gold">{top3[0].pontosTotais.toLocaleString()} Coins</p>
             </div>
             <div className="bg-ejn-gold/20 h-12 md:h-24 w-full rounded-b-lg border-x-2 border-b-2 border-ejn-gold/10"></div>
           </div>
@@ -79,7 +100,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-4 pb-2 px-2 text-center apple-shadow">
                <p className="text-[10px] font-bold text-apple-text truncate">{top3[2].name.split(' ')[0]}</p>
-               <p className="text-[9px] font-black text-ejn-medium">{top3[2].points.toLocaleString()} Coins</p>
+               <p className="text-[9px] font-black text-ejn-medium">{top3[2].pontosTotais.toLocaleString()} Coins</p>
             </div>
             <div className="bg-orange-100 h-6 md:h-12 w-full rounded-b-lg"></div>
           </div>
@@ -124,7 +145,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
                 <p className={`text-sm font-bold truncate ${u.isCurrent ? 'text-ejn-dark' : 'text-apple-text'}`}>
                   {u.name} {u.isCurrent && <span className="ml-1 text-[9px] bg-ejn-dark text-white px-2 py-0.5 rounded-full uppercase">Você</span>}
                 </p>
-                <p className="text-[10px] text-apple-secondary font-medium uppercase tracking-widest">Nível {u.level} <span className="hidden sm:inline">• Aluno EJN</span></p>
+                <p className="text-[10px] text-apple-secondary font-medium uppercase tracking-widest">Nível {u.nivel} <span className="hidden sm:inline">• Aluno EJN</span></p>
               </div>
               <div className="flex items-center gap-4">
                 {!u.isCurrent && (
@@ -137,7 +158,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
                   </button>
                 )}
                 <div className="text-right min-w-[60px]">
-                  <p className="text-sm font-black text-ejn-medium">{u.points.toLocaleString()}</p>
+                  <p className="text-sm font-black text-ejn-medium">{u.pontosTotais.toLocaleString()}</p>
                   <p className="text-[9px] font-bold text-apple-tertiary uppercase tracking-tighter">Coins</p>
                 </div>
               </div>
