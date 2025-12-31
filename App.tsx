@@ -20,23 +20,49 @@ const App: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    // Verificar sessão inicial
-    storage.getCurrentUser().then(user => {
-        if (user) setCurrentUser(user);
-        setLoading(false);
-    });
+    let mounted = true;
 
-    // Listener de Auth do Supabase
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN' && session) {
-            const user = await storage.getCurrentUser();
-            setCurrentUser(user);
-        } else if (event === 'SIGNED_OUT') {
-            setCurrentUser(null);
+    const initializeAuth = async () => {
+      try {
+        // 1. Tenta buscar o usuário atual
+        const user = await storage.getCurrentUser();
+        if (mounted && user) {
+          setCurrentUser(user);
         }
+      } catch (error) {
+        console.error("Erro ao carregar sessão inicial:", error);
+      } finally {
+        // 2. GARANTE que o loading pare, aconteça o que acontecer
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    initializeAuth();
+
+    // 3. Configura o listener para mudanças futuras (Login/Logout/Troca de aba)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      // Ignora eventos iniciais se o app ainda estiver carregando a primeira vez para evitar conflito
+      if (event === 'INITIAL_SESSION') return;
+
+      if (event === 'SIGNED_IN' && session) {
+        // Pequeno delay para evitar race condition com triggers de banco
+        await new Promise(r => setTimeout(r, 500)); 
+        const user = await storage.getCurrentUser();
+        if (mounted && user) setCurrentUser(user);
+      } else if (event === 'SIGNED_OUT') {
+        if (mounted) {
+          setCurrentUser(null);
+          setCurrentView('FEED');
+        }
+      }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const handleLoginSuccess = (user: User) => {
@@ -45,7 +71,11 @@ const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await storage.signOut();
+    try {
+        await storage.signOut();
+    } catch (error) {
+        console.error("Erro ao sair:", error);
+    }
     setCurrentUser(null);
     setCurrentView('FEED');
     setIsMobileMenuOpen(false);
@@ -53,32 +83,34 @@ const App: React.FC = () => {
 
   const handleUpdateUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
-    // Storage já é chamado dentro dos componentes quando necessário, 
-    // mas atualização de estado local é importante para reatividade imediata
   };
 
   const handleFollowUser = async (targetId: string) => {
     if (!currentUser || currentUser.id === targetId) return;
     if (currentUser.followingIds.includes(targetId)) return;
 
-    // Call storage
-    await storage.followUser(currentUser.id, targetId);
+    try {
+        await storage.followUser(currentUser.id, targetId);
 
-    const updatedUser: User = {
-      ...currentUser,
-      followingCount: currentUser.followingCount + 1,
-      followingIds: [...currentUser.followingIds, targetId],
-      xp: currentUser.xp + 10
-    };
-    
-    handleUpdateUser(updatedUser);
-    alert('Conexão estabelecida! +10 XP de bônus por Networking.');
+        const updatedUser: User = {
+          ...currentUser,
+          followingCount: currentUser.followingCount + 1,
+          followingIds: [...currentUser.followingIds, targetId],
+          xp: currentUser.xp + 10
+        };
+        
+        handleUpdateUser(updatedUser);
+        alert('Conexão estabelecida! +10 XP de bônus por Networking.');
+    } catch (error) {
+        console.error("Erro ao seguir usuário:", error);
+    }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-apple-bg flex items-center justify-center">
+      <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
+        <p className="text-xs font-bold text-apple-tertiary uppercase tracking-widest animate-pulse">Carregando Rede EJN...</p>
       </div>
     );
   }
