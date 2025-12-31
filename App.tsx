@@ -17,53 +17,79 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<AppView>('FEED');
   const [loading, setLoading] = useState(true);
-  const [loadingError, setLoadingError] = useState(false); // Novo estado para erro de carregamento
+  const [loadingError, setLoadingError] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
-    const initializeAuth = async () => {
-      // Cria uma promessa que rejeita após 15 segundos (Timeout de segurança aumentado)
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Timeout")), 15000)
-      );
-
+    const initApp = async () => {
       try {
-        // Corrida entre carregar usuário e o timeout
+        // 1. Verifica sessão primeiro (rápido)
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session) {
+          // Se não tem sessão, para de carregar e mostra Login
+          if (mounted) setLoading(false);
+          return;
+        }
+
+        // 2. Se tem sessão, tenta buscar os dados do usuário com Timeout
+        // Timeout de 15s (suficiente para Cold Start do Supabase Free Tier)
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Tempo limite excedido")), 15000)
+        );
+
         const user = await Promise.race([
           storage.getCurrentUser(),
           timeoutPromise
         ]) as User | null;
 
-        if (mounted && user) {
-          setCurrentUser(user);
+        if (mounted) {
+          if (user) {
+            setCurrentUser(user);
+          } else {
+            // Sessão existe mas perfil não carregou? (Pode ser erro ou perfil não criado)
+            // Vamos considerar como falha de carregamento se o user for null mas session existir
+             console.warn("Sessão existe mas perfil retornou null");
+             // Opcional: setLoadingError(true);
+          }
         }
       } catch (error) {
-        console.error("Erro ou Timeout ao carregar sessão:", error);
+        console.error("Erro ao iniciar app:", error);
         if (mounted) setLoadingError(true);
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        if (mounted) setLoading(false);
       }
     };
 
-    initializeAuth();
+    initApp();
 
+    // Listener de Auth para mudanças em tempo real (Login/Logout em outras abas ou pós-cadastro)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'INITIAL_SESSION') return;
+      if (event === 'INITIAL_SESSION') return; // Ignora o inicial pois initApp já cuida
 
       if (event === 'SIGNED_IN' && session) {
-        // Se já temos usuário carregado, evitamos recarregar para não causar flash/loop
+        // Se o usuário fez login e ainda não temos os dados carregados na memória
         if (!currentUser) {
-           const user = await storage.getCurrentUser();
-           if (mounted && user) setCurrentUser(user);
+           setLoading(true);
+           try {
+             const user = await storage.getCurrentUser();
+             if (mounted && user) {
+               setCurrentUser(user);
+               setLoadingError(false);
+             }
+           } catch (e) {
+             console.error("Erro no AuthStateChange:", e);
+           } finally {
+             if (mounted) setLoading(false);
+           }
         }
       } else if (event === 'SIGNED_OUT') {
         if (mounted) {
           setCurrentUser(null);
           setCurrentView('FEED');
+          setLoading(false);
         }
       }
     });
@@ -72,7 +98,7 @@ const App: React.FC = () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []); // Dependência vazia intencional
+  }, []);
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
@@ -129,23 +155,29 @@ const App: React.FC = () => {
     );
   }
 
-  // TELA DE ERRO (TIMEOUT) COM OPÇÃO DE SAIR
+  // TELA DE ERRO (TIMEOUT)
   if (loadingError) {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center p-6 text-center">
-        <div className="bg-white p-8 rounded-3xl apple-shadow max-w-sm w-full">
+        <div className="bg-white p-8 rounded-3xl apple-shadow max-w-sm w-full animate-fadeIn">
            <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
               <Icons.X className="w-8 h-8" />
            </div>
-           <h2 className="text-xl font-bold text-apple-text mb-2">Ops! A conexão está lenta.</h2>
+           <h2 className="text-xl font-bold text-apple-text mb-2">Erro de Conexão</h2>
            <p className="text-sm text-apple-secondary mb-6">
-             Não conseguimos carregar seu perfil a tempo. Verifique sua internet ou tente novamente.
+             O servidor demorou para responder. Verifique sua internet.
            </p>
            <button 
-             onClick={handleLogout}
-             className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors"
+             onClick={() => window.location.reload()}
+             className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors mb-3"
            >
              Tentar Novamente
+           </button>
+           <button 
+             onClick={handleLogout}
+             className="w-full py-3 bg-transparent text-apple-secondary border border-apple-border rounded-xl font-bold uppercase tracking-widest hover:bg-apple-bg transition-colors"
+           >
+             Sair da Conta
            </button>
         </div>
       </div>
