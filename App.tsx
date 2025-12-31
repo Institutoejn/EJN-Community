@@ -17,22 +17,32 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<AppView>('FEED');
   const [loading, setLoading] = useState(true);
+  const [loadingError, setLoadingError] = useState(false); // Novo estado para erro de carregamento
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
     const initializeAuth = async () => {
+      // Cria uma promessa que rejeita após 7 segundos (Timeout de segurança)
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout")), 7000)
+      );
+
       try {
-        // 1. Tenta buscar o usuário atual
-        const user = await storage.getCurrentUser();
+        // Corrida entre carregar usuário e o timeout
+        const user = await Promise.race([
+          storage.getCurrentUser(),
+          timeoutPromise
+        ]) as User | null;
+
         if (mounted && user) {
           setCurrentUser(user);
         }
       } catch (error) {
-        console.error("Erro ao carregar sessão inicial:", error);
+        console.error("Erro ou Timeout ao carregar sessão:", error);
+        if (mounted) setLoadingError(true);
       } finally {
-        // 2. GARANTE que o loading pare, aconteça o que acontecer
         if (mounted) {
           setLoading(false);
         }
@@ -41,16 +51,15 @@ const App: React.FC = () => {
 
     initializeAuth();
 
-    // 3. Configura o listener para mudanças futuras (Login/Logout/Troca de aba)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      // Ignora eventos iniciais se o app ainda estiver carregando a primeira vez para evitar conflito
       if (event === 'INITIAL_SESSION') return;
 
       if (event === 'SIGNED_IN' && session) {
-        // Pequeno delay para evitar race condition com triggers de banco
-        await new Promise(r => setTimeout(r, 500)); 
-        const user = await storage.getCurrentUser();
-        if (mounted && user) setCurrentUser(user);
+        // Se já temos usuário carregado, evitamos recarregar para não causar flash/loop
+        if (!currentUser) {
+           const user = await storage.getCurrentUser();
+           if (mounted && user) setCurrentUser(user);
+        }
       } else if (event === 'SIGNED_OUT') {
         if (mounted) {
           setCurrentUser(null);
@@ -63,14 +72,16 @@ const App: React.FC = () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, []); // Dependência vazia intencional
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+    setLoadingError(false);
     setCurrentView('FEED');
   };
 
   const handleLogout = async () => {
+    setLoading(true);
     try {
         await storage.signOut();
     } catch (error) {
@@ -79,6 +90,8 @@ const App: React.FC = () => {
     setCurrentUser(null);
     setCurrentView('FEED');
     setIsMobileMenuOpen(false);
+    setLoadingError(false);
+    setLoading(false);
   };
 
   const handleUpdateUser = (updatedUser: User) => {
@@ -106,11 +119,35 @@ const App: React.FC = () => {
     }
   };
 
+  // TELA DE CARREGAMENTO
   if (loading) {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
         <p className="text-xs font-bold text-apple-tertiary uppercase tracking-widest animate-pulse">Carregando Rede EJN...</p>
+      </div>
+    );
+  }
+
+  // TELA DE ERRO (TIMEOUT) COM OPÇÃO DE SAIR
+  if (loadingError) {
+    return (
+      <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center p-6 text-center">
+        <div className="bg-white p-8 rounded-3xl apple-shadow max-w-sm w-full">
+           <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Icons.X className="w-8 h-8" />
+           </div>
+           <h2 className="text-xl font-bold text-apple-text mb-2">Ops! Demorou demais.</h2>
+           <p className="text-sm text-apple-secondary mb-6">
+             Não conseguimos carregar seu perfil. Isso pode acontecer se sua conexão estiver instável ou se houver muitos dados para baixar.
+           </p>
+           <button 
+             onClick={handleLogout}
+             className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors"
+           >
+             Sair e Tentar Novamente
+           </button>
+        </div>
       </div>
     );
   }
