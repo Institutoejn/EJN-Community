@@ -37,32 +37,27 @@ export const storage = {
     const { data: { session }, error } = await supabase.auth.getSession();
     if (error || !session) return null;
 
-    // Buscar dados do perfil público
-    const { data: profile, error: profileError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', session.user.id)
-      .single();
+    // Otimização: Buscas paralelas para reduzir tempo de carregamento
+    const [profileResult, followingResult, followersResult] = await Promise.all([
+        supabase.from('users').select('*').eq('id', session.user.id).single(),
+        supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
+    ]);
 
-    if (profileError || !profile) return null;
-
-    // Buscar quem o usuário segue
-    const { data: following } = await supabase
-      .from('follows')
-      .select('following_id')
-      .eq('follower_id', session.user.id);
+    const profile = profileResult.data;
+    
+    // Se não encontrou perfil, retornamos null (Auth tentará criar)
+    if (profileResult.error || !profile) return null;
 
     const mappedUser = mapUser(profile);
+    
+    // Processamento de seguidores
+    const following = followingResult.data;
     mappedUser.followingIds = following ? following.map((f: any) => f.following_id) : [];
     mappedUser.followingCount = mappedUser.followingIds.length;
     
-    // Buscar contagem de seguidores (Count Query)
-    const { count } = await supabase
-      .from('follows')
-      .select('*', { count: 'exact', head: true })
-      .eq('following_id', session.user.id);
-      
-    mappedUser.followersCount = count || 0;
+    // Contagem de seguidores
+    mappedUser.followersCount = followersResult.count || 0;
 
     return mappedUser;
   },

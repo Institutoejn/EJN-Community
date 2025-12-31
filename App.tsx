@@ -24,9 +24,9 @@ const App: React.FC = () => {
     let mounted = true;
 
     const initializeAuth = async () => {
-      // Cria uma promessa que rejeita após 7 segundos (Timeout de segurança)
+      // Cria uma promessa que rejeita após 15 segundos (Timeout de segurança aumentado)
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Timeout")), 7000)
+        setTimeout(() => reject(new Error("Timeout")), 15000)
       );
 
       try {
@@ -137,15 +137,15 @@ const App: React.FC = () => {
            <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
               <Icons.X className="w-8 h-8" />
            </div>
-           <h2 className="text-xl font-bold text-apple-text mb-2">Ops! Demorou demais.</h2>
+           <h2 className="text-xl font-bold text-apple-text mb-2">Ops! A conexão está lenta.</h2>
            <p className="text-sm text-apple-secondary mb-6">
-             Não conseguimos carregar seu perfil. Isso pode acontecer se sua conexão estiver instável ou se houver muitos dados para baixar.
+             Não conseguimos carregar seu perfil a tempo. Verifique sua internet ou tente novamente.
            </p>
            <button 
              onClick={handleLogout}
              className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors"
            >
-             Sair e Tentar Novamente
+             Tentar Novamente
            </button>
         </div>
       </div>
