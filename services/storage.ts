@@ -34,32 +34,49 @@ export const storage = {
   // --- AUTH & USER ---
 
   getCurrentUser: async (): Promise<User | null> => {
-    const { data: { session }, error } = await supabase.auth.getSession();
-    if (error || !session) return null;
+    try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error || !session) return null;
 
-    // Otimização: Buscas paralelas para reduzir tempo de carregamento
-    const [profileResult, followingResult, followersResult] = await Promise.all([
-        supabase.from('users').select('*').eq('id', session.user.id).single(),
-        supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
-    ]);
+        // 1. DADOS CRÍTICOS: Perfil do usuário
+        // Se isso falhar, o app não deve carregar
+        const { data: profile, error: profileError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
 
-    const profile = profileResult.data;
-    
-    // Se não encontrou perfil, retornamos null (Auth tentará criar)
-    if (profileResult.error || !profile) return null;
+        if (profileError || !profile) {
+            console.error("Erro ao carregar perfil crítico:", profileError);
+            return null;
+        }
 
-    const mappedUser = mapUser(profile);
-    
-    // Processamento de seguidores
-    const following = followingResult.data;
-    mappedUser.followingIds = following ? following.map((f: any) => f.following_id) : [];
-    mappedUser.followingCount = mappedUser.followingIds.length;
-    
-    // Contagem de seguidores
-    mappedUser.followersCount = followersResult.count || 0;
+        const mappedUser = mapUser(profile);
 
-    return mappedUser;
+        // 2. DADOS NÃO-CRÍTICOS: Seguidores/Seguindo
+        // Se isso falhar, não tem problema, carregamos o usuário com 0 seguidores
+        // para não travar o app (Graceful Degradation)
+        try {
+            const [followingResult, followersResult] = await Promise.all([
+                supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
+                supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
+            ]);
+
+            const following = followingResult.data;
+            mappedUser.followingIds = following ? following.map((f: any) => f.following_id) : [];
+            mappedUser.followingCount = mappedUser.followingIds.length;
+            mappedUser.followersCount = followersResult.count || 0;
+
+        } catch (secondaryError) {
+            console.warn("Falha ao carregar dados secundários (seguidores). Ignorando.", secondaryError);
+            // Mantém os defaults zerados definidos no mapUser
+        }
+
+        return mappedUser;
+    } catch (fatalError) {
+        console.error("Erro fatal no storage.getCurrentUser:", fatalError);
+        return null;
+    }
   },
 
   // Fallback para criar perfil manualmente se o Trigger falhar
