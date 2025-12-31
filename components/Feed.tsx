@@ -20,6 +20,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [loadingPosts, setLoadingPosts] = useState(true);
+  const [processingImage, setProcessingImage] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -33,22 +34,54 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     fetchPosts();
   }, []);
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // Nota: Em prod, usar Supabase Storage para upload real.
-      // Aqui mantendo base64 por simplicidade de migração imediata conforme solicitado
+  // Função utilitária para comprimir imagens (duplicada para evitar dependência externa neste estágio)
+  const processImage = (file: File, maxWidth: number): Promise<string> => {
+    return new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setSelectedImage(reader.result as string);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.src = event.target?.result as string;
       };
       reader.readAsDataURL(file);
+    });
+  };
+
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setProcessingImage(true);
+      try {
+        const compressed = await processImage(file, 800);
+        setSelectedImage(compressed);
+      } catch (err) {
+        console.error("Erro ao processar imagem do post");
+      } finally {
+        setProcessingImage(false);
+      }
     }
   };
 
   const handlePostSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPost.trim() && !selectedImage) return;
+    if ((!newPost.trim() && !selectedImage) || processingImage) return;
 
     // Criar post
     await storage.savePost({
@@ -176,20 +209,20 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             <div className="mt-4 flex justify-between items-center">
               <button 
                 type="button" 
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => !processingImage && fileInputRef.current?.click()}
                 className="p-2.5 text-apple-secondary hover:text-ejn-medium hover:bg-apple-bg rounded-xl apple-transition flex items-center gap-2 group"
               >
                 <svg className="w-5 h-5 group-hover:scale-110 apple-transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
-                <span className="text-[10px] font-bold uppercase tracking-widest hidden md:inline">Anexar Foto</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest hidden md:inline">{processingImage ? 'Processando...' : 'Anexar Foto'}</span>
               </button>
               <button 
                 type="submit"
-                disabled={!newPost.trim() && !selectedImage}
+                disabled={(!newPost.trim() && !selectedImage) || processingImage}
                 className="bg-ejn-gold text-ejn-dark px-8 py-2.5 rounded-full font-bold text-xs md:text-sm shadow-sm hover:scale-105 active:scale-95 disabled:opacity-40 disabled:scale-100 apple-transition uppercase tracking-widest"
               >
-                Publicar
+                {processingImage ? 'Aguarde' : 'Publicar'}
               </button>
             </div>
           </form>

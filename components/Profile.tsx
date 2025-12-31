@@ -14,25 +14,64 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editedUser, setEditedUser] = useState<User>({ ...user });
   const [message, setMessage] = useState('');
+  const [processingImage, setProcessingImage] = useState(false);
   
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
   const xpPercentage = (user.xp / user.xpProximoNivel) * 100;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'cover') => {
-    const file = e.target.files?.[0];
-    if (file) {
+  // Função utilitária para comprimir imagens via Canvas
+  const processImage = (file: File, maxWidth: number): Promise<string> => {
+    return new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        if (type === 'avatar') {
-          setEditedUser({ ...editedUser, avatarUrl: base64String });
-        } else {
-          setEditedUser({ ...editedUser, coverUrl: base64String });
-        }
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Comprime para JPEG com qualidade 0.7 (reduz drasticamente o tamanho do Base64)
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.src = event.target?.result as string;
       };
       reader.readAsDataURL(file);
+    });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'cover') => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setProcessingImage(true);
+      try {
+        // Avatar max 300px, Capa max 800px para evitar travamento do banco
+        const maxWidth = type === 'avatar' ? 300 : 800;
+        const compressedBase64 = await processImage(file, maxWidth);
+        
+        if (type === 'avatar') {
+          setEditedUser({ ...editedUser, avatarUrl: compressedBase64 });
+        } else {
+          setEditedUser({ ...editedUser, coverUrl: compressedBase64 });
+        }
+      } catch (error) {
+        console.error("Erro ao processar imagem", error);
+        alert("Erro ao processar a imagem. Tente uma menor.");
+      } finally {
+        setProcessingImage(false);
+      }
     }
   };
 
@@ -78,10 +117,10 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
           {isEditing && (
              <div className="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity">
                 <button 
-                  onClick={() => coverInputRef.current?.click()}
+                  onClick={() => !processingImage && coverInputRef.current?.click()}
                   className="bg-white/90 text-apple-text px-4 py-2 rounded-full text-xs font-bold apple-transition hover:scale-105 flex items-center gap-2"
                 >
-                  <Icons.Plus className="w-4 h-4" /> Alterar Capa
+                  <Icons.Plus className="w-4 h-4" /> {processingImage ? 'Processando...' : 'Alterar Capa'}
                 </button>
              </div>
           )}
@@ -102,10 +141,10 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                   <div className="absolute inset-0 bg-black/40 rounded-full"></div>
                   <div className="z-10 flex flex-col gap-2">
                     <button 
-                      onClick={() => avatarInputRef.current?.click()}
+                      onClick={() => !processingImage && avatarInputRef.current?.click()}
                       className="bg-white text-apple-text px-3 py-1.5 rounded-full text-[10px] font-bold apple-transition hover:scale-105"
                     >
-                      Alterar Foto
+                      {processingImage ? '...' : 'Alterar Foto'}
                     </button>
                     <button 
                       onClick={() => setEditedUser({...editedUser, avatarCor: AVATAR_COLORS[Math.floor(Math.random()*AVATAR_COLORS.length)], avatarUrl: undefined})}
@@ -138,9 +177,10 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                 </button>
                 <button 
                   onClick={handleSave}
-                  className="bg-ejn-gold text-ejn-dark px-7 md:px-8 py-2 md:py-2.5 rounded-full font-bold text-sm shadow-md hover:scale-105 active:scale-95 apple-transition"
+                  disabled={processingImage}
+                  className="bg-ejn-gold text-ejn-dark px-7 md:px-8 py-2 md:py-2.5 rounded-full font-bold text-sm shadow-md hover:scale-105 active:scale-95 apple-transition disabled:opacity-50"
                 >
-                  Salvar
+                  {processingImage ? 'Aguarde...' : 'Salvar'}
                 </button>
               </div>
             )}
