@@ -8,10 +8,10 @@ const mapUser = (dbUser: any): User => ({
   name: dbUser.name || 'Usuário Sem Nome',
   email: dbUser.email || '',
   role: dbUser.role as 'aluno' | 'gestor',
-  nivel: dbUser.nivel,
-  xp: dbUser.xp,
-  xpProximoNivel: dbUser.xp_proximo_nivel,
-  pontosTotais: dbUser.pontos_totais,
+  nivel: dbUser.nivel || 1,
+  xp: dbUser.xp || 0,
+  xpProximoNivel: dbUser.xp_proximo_nivel || 1000,
+  pontosTotais: dbUser.pontos_totais || 0,
   badges: dbUser.badges || [],
   dataCriacao: dbUser.created_at,
   avatarCor: dbUser.avatar_cor,
@@ -20,10 +20,10 @@ const mapUser = (dbUser: any): User => ({
   website: dbUser.website,
   avatarUrl: dbUser.avatar_url,
   coverUrl: dbUser.cover_url,
-  postsCount: dbUser.posts_count,
-  likesReceived: dbUser.likes_received,
+  postsCount: dbUser.posts_count || 0,
+  likesReceived: dbUser.likes_received || 0,
   commentsCount: 0,
-  streak: dbUser.streak,
+  streak: dbUser.streak || 0,
   followersCount: 0, 
   followingCount: 0,
   followingIds: [], 
@@ -67,6 +67,31 @@ export const storage = {
     return mappedUser;
   },
 
+  // Fallback para criar perfil manualmente se o Trigger falhar
+  createProfile: async (userId: string, email: string, name: string, role: string, avatarCor: string) => {
+      const { error } = await supabase.from('users').insert({
+          id: userId,
+          email: email,
+          name: name,
+          role: role,
+          avatar_cor: avatarCor,
+          nivel: 1,
+          xp: 0,
+          xp_proximo_nivel: 1000,
+          pontos_totais: 0,
+          badges: [],
+          created_at: new Date().toISOString(),
+          status: 'active',
+          posts_count: 0,
+          likes_received: 0,
+          streak: 0
+      });
+      if (error) {
+          console.error("Erro ao criar perfil manualmente:", error);
+          throw error;
+      }
+  },
+
   getUsers: async (): Promise<User[]> => {
     const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false });
     if (error) {
@@ -79,15 +104,11 @@ export const storage = {
   saveUser: async (user: User) => {
     const dbUser = {
       name: user.name,
-      // role, nivel, etc são geralmente geridos pelo backend, 
-      // mas permitindo update aqui para manter lógica atual do front
       bio: user.bio,
       location: user.location,
       website: user.website,
       avatar_url: user.avatarUrl,
       cover_url: user.coverUrl,
-      // Campos de gamificação só devem ser atualizados via lógica de missão/post, 
-      // mas mantendo compatibilidade:
       xp: user.xp,
       pontos_totais: user.pontosTotais,
       likes_received: user.likesReceived,
@@ -127,21 +148,21 @@ export const storage = {
     return data.map((p: any) => ({
       id: p.id,
       userId: p.user_id,
-      userName: p.users?.name || 'Desconhecido',
+      userName: p.users?.name || 'Usuário Desconhecido',
       avatarUrl: p.users?.avatar_url,
       avatarCor: p.users?.avatar_cor,
       content: p.content,
       imageUrl: p.image_url,
       timestamp: p.created_at,
-      likes: p.likes, 
+      likes: p.likes || 0, 
       isPinned: p.is_pinned,
-      likedByMe: currentUserId ? p.likes.some((l: any) => l.user_id === currentUserId) : false,
-      comments: p.comments.map((c: any) => ({
+      likedByMe: currentUserId ? (p.likes || []).some((l: any) => l.user_id === currentUserId) : false,
+      comments: (p.comments || []).map((c: any) => ({
         id: c.id,
         text: c.content,
         timestamp: c.created_at,
         userId: c.user_id,
-        userName: c.users?.name || 'Desconhecido',
+        userName: c.users?.name || 'Usuário Desconhecido',
         avatarUrl: c.users?.avatar_url,
         avatarCor: c.users?.avatar_cor
       })).sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
@@ -156,9 +177,6 @@ export const storage = {
             content: post.content,
             image_url: post.imageUrl
         });
-        
-        // Trigger de likes/posts count roda no banco
-        
         if (error) console.error("Erro ao criar post", error);
     } else {
         // Update (ex: pin)
@@ -171,17 +189,12 @@ export const storage = {
   },
 
   toggleLike: async (postId: string, userId: string) => {
-      // Verificar se já curtiu
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
       
       if (data) {
-          // Remover Like
           await supabase.from('likes').delete().eq('id', data.id);
-          // Trigger DB atualiza contadores automaticamente
       } else {
-          // Adicionar Like
           await supabase.from('likes').insert({ post_id: postId, user_id: userId });
-          // Trigger DB atualiza contadores automaticamente
       }
   },
 
@@ -238,7 +251,6 @@ export const storage = {
           follower_id: followerId,
           following_id: followingId
       });
-      // Trigger ou lógica adicional de XP pode ser adicionada aqui se necessário
       if(error) console.error("Erro ao seguir", error);
   },
 

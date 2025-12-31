@@ -24,50 +24,68 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
 
     try {
       if (view === AuthView.REGISTER) {
-        // Cadastro Supabase com Metadata
+        // Cadastro Supabase
         const avatarCor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
+        const role = email.toLowerCase().includes('admin') ? 'gestor' : 'aluno';
+
         const { data, error } = await storage.signUp(email, password, {
             name: name,
-            role: email.toLowerCase().includes('admin') ? 'gestor' : 'aluno',
+            role: role,
             avatarCor: avatarCor
         });
 
         if (error) throw error;
         
-        // Verifica se logou automaticamente
+        // Se o cadastro na Auth funcionou, verifica o perfil público
         if (data.user) {
-           // Pequeno delay para garantir que o Trigger do Banco criou o perfil público
-           await new Promise(r => setTimeout(r, 1500));
+           // Pequeno delay para dar tempo ao banco (se houver trigger)
+           await new Promise(r => setTimeout(r, 1000));
            
-           const user = await storage.getCurrentUser();
+           let user = await storage.getCurrentUser();
+
+           // Se o usuário não foi encontrado (significa que não há Trigger no banco),
+           // criamos o perfil manualmente agora para não travar o app.
+           if (!user) {
+              console.log("Perfil não encontrado automaticamente. Criando manualmente...");
+              try {
+                  await storage.createProfile(data.user.id, email, name, role, avatarCor);
+                  // Tenta buscar novamente após criar
+                  user = await storage.getCurrentUser();
+              } catch (manualCreateError) {
+                  console.error("Falha ao criar perfil manual:", manualCreateError);
+              }
+           }
+           
            if(user) {
                onLoginSuccess(user);
            } else {
-               // Fallback: Tenta login manual se a sessão não persistiu
-               const { error: loginErr } = await storage.signIn(email, password);
-               if(!loginErr) {
-                   const fetchedUser = await storage.getCurrentUser();
-                   if(fetchedUser) onLoginSuccess(fetchedUser);
-               }
+               // Fallback final: se mesmo assim falhar, pede login
+               alert('Cadastro realizado com sucesso! Por favor, faça login.');
+               setView(AuthView.LOGIN);
            }
         } else {
-            // Caso o Supabase exija confirmação de email
+            // Caso exija confirmação de e-mail configurada no Supabase
             alert('Cadastro realizado! Verifique seu e-mail para confirmar a conta.');
             setView(AuthView.LOGIN);
         }
 
       } else {
-        // Login Supabase
+        // Login Normal
         const { error } = await storage.signIn(email, password);
         if (error) throw new Error('E-mail ou senha incorretos.');
         
         const user = await storage.getCurrentUser();
-        if (!user) throw new Error('Perfil ainda não criado. Tente novamente em alguns segundos.');
+        
+        if (!user) {
+             throw new Error('Perfil de usuário não encontrado. Entre em contato com o suporte.');
+        }
+        
         if (user.status === 'suspended') throw new Error('Esta conta está suspensa.');
         
         onLoginSuccess(user);
       }
     } catch (err: any) {
+      console.error(err);
       setError(err.message || 'Ocorreu um erro inesperado.');
     } finally {
       setLoading(false);
@@ -128,7 +146,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
             </div>
 
             {error && (
-              <div className="text-red-500 text-xs font-bold bg-red-50 p-4 rounded-xl border border-red-100">
+              <div className="text-red-500 text-xs font-bold bg-red-50 p-4 rounded-xl border border-red-100 animate-fadeIn">
                 {error}
               </div>
             )}
@@ -136,8 +154,9 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-14 bg-ejn-gold text-ejn-dark font-bold rounded-full shadow-lg hover:shadow-ejn-gold/20 hover:scale-[1.02] active:scale-95 apple-transition disabled:opacity-50 disabled:scale-100 uppercase tracking-widest text-xs"
+              className="w-full h-14 bg-ejn-gold text-ejn-dark font-bold rounded-full shadow-lg hover:shadow-ejn-gold/20 hover:scale-[1.02] active:scale-95 apple-transition disabled:opacity-50 disabled:scale-100 uppercase tracking-widest text-xs flex items-center justify-center gap-2"
             >
+              {loading && <div className="w-4 h-4 border-2 border-ejn-dark border-t-transparent rounded-full animate-spin"></div>}
               {loading ? 'Processando...' : (view === AuthView.LOGIN ? 'Entrar' : 'Começar Agora')}
             </button>
           </form>
@@ -147,6 +166,9 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
               onClick={() => {
                 setView(view === AuthView.LOGIN ? AuthView.REGISTER : AuthView.LOGIN);
                 setError('');
+                setName('');
+                setEmail('');
+                setPassword('');
               }}
               className="text-xs font-bold text-ejn-medium hover:text-ejn-dark transition-colors uppercase tracking-widest"
             >
