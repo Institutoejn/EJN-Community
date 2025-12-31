@@ -4,6 +4,7 @@ import { User, Post, Comment } from '../types';
 import { Icons } from '../constants';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
+import { supabase } from '../services/supabase';
 
 interface FeedProps {
   user: User;
@@ -17,29 +18,91 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showXpGain, setShowXpGain] = useState(false);
   const [xpAmount, setXpAmount] = useState(50);
+  
+  // States para Comentários
   const [openComments, setOpenComments] = useState<Set<string>>(new Set());
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
+  
+  // States para Edição/Exclusão
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [processingImage, setProcessingImage] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Fecha menu ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // --- REALTIME SUBSCRIPTION ---
+  useEffect(() => {
+    fetchPosts();
+
+    // Canal de Websocket para ouvir mudanças no banco em Tempo Real
+    const channel = supabase.channel('feed-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
+         // Se um post for atualizado ou deletado por outro user (ou pelo próprio em outra aba)
+         if (payload.eventType === 'UPDATE') {
+             setPosts(current => current.map(p => p.id === payload.new.id ? { ...p, content: payload.new.content, isPinned: payload.new.is_pinned } : p));
+         } else if (payload.eventType === 'DELETE') {
+             setPosts(current => current.filter(p => p.id !== payload.old.id));
+         } else if (payload.eventType === 'INSERT') {
+             // Novo post entra no topo se não for meu (meu já entra via optimistic UI)
+             if (payload.new.user_id !== user.id) {
+                 fetchPosts(true); // Refresh seguro para trazer joins de usuário
+             }
+         }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
+         // Atualiza likes sem recarregar tudo (estratégia simples: refresh silencioso ou lógica complexa de delta)
+         // Para garantir consistência dos contadores:
+         refreshLikesAndComments();
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
+         if (payload.new.user_id !== user.id) {
+             refreshLikesAndComments();
+         }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const fetchPosts = async (force = false) => {
-      // Loading state só aparece na primeira carga. 
-      // Atualizações subsequentes são silenciosas ou mostram skeleton se cache estiver vazio.
       if (posts.length === 0) setLoadingPosts(true);
-      
       const savedPosts = await storage.getPosts(force);
       setPosts(savedPosts);
       setLoadingPosts(false);
   };
 
-  useEffect(() => {
-    fetchPosts();
-  }, []);
+  // Função leve para atualizar apenas números de likes e comentários sem piscar a tela
+  const refreshLikesAndComments = async () => {
+      const updatedPosts = await storage.getPosts(true);
+      setPosts(current => {
+          // Mantém o estado local de quem está editando, atualiza apenas dados
+          return updatedPosts.map(up => {
+              const local = current.find(c => c.id === up.id);
+              if (local && editingPostId === local.id) {
+                   return { ...up, content: local.content }; // Não sobrescreve o que o usuário está lendo/editando
+              }
+              return up;
+          });
+      });
+  };
 
-  // --- FAST IMAGE PROCESSING ---
-  // Qualidade 0.6 e Max Width 700px garantem Base64 leve e rápido
   const processImage = (file: File): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -47,22 +110,17 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const maxWidth = 700; // Otimizado para velocidade
+          const maxWidth = 700;
           let width = img.width;
           let height = img.height;
-
           if (width > maxWidth) {
             height = Math.round((height * maxWidth) / width);
             width = maxWidth;
           }
-
           canvas.width = width;
           canvas.height = height;
-          
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
-          // JPEG com qualidade 0.6 para performance máxima
           resolve(canvas.toDataURL('image/jpeg', 0.6));
         };
         img.src = event.target?.result as string;
@@ -90,44 +148,94 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     e.preventDefault();
     if ((!newPost.trim() && !selectedImage) || processingImage) return;
 
-    // Criar post
-    await storage.savePost({
+    // Optimistic UI: Adiciona imediatamente
+    const tempId = 'temp-' + Date.now();
+    const optimisticPost: Post = {
+        id: tempId,
         userId: user.id,
         userName: user.name,
+        avatarUrl: user.avatarUrl,
+        avatarCor: user.avatarCor,
         content: newPost,
         imageUrl: selectedImage || undefined,
         comments: [], 
         likes: 0,
         timestamp: new Date().toISOString(),
-        id: '' 
-    });
+        likedByMe: false
+    };
 
-    // Limpeza da UI Instantânea
+    setPosts([optimisticPost, ...posts]);
     setNewPost('');
     setSelectedImage(null);
 
-    // Feedback de XP
+    // Save to DB
+    await storage.savePost({
+        userId: user.id,
+        userName: user.name,
+        content: optimisticPost.content,
+        imageUrl: optimisticPost.imageUrl,
+        comments: [], 
+        likes: 0,
+        timestamp: optimisticPost.timestamp,
+        id: '' 
+    });
+
     const bonus = selectedImage ? 75 : 50;
     setXpAmount(bonus);
     setShowXpGain(true);
     
-    // Atualizar UI do usuário 
-    const updatedUser = { 
-      ...user, 
-      xp: user.xp + bonus, 
-      postsCount: (user.postsCount || 0) + 1 
-    };
+    const updatedUser = { ...user, xp: user.xp + bonus, postsCount: (user.postsCount || 0) + 1 };
     onUpdateUser(updatedUser);
-    
-    // Background updates (fire & forget)
     storage.saveUser(updatedUser);
-    fetchPosts(true); // Recarrega feed em background
 
-    setTimeout(() => setShowXpGain(false), 2000);
+    setTimeout(() => {
+        setShowXpGain(false);
+        fetchPosts(true); // Sincroniza ID real
+    }, 2000);
+  };
+
+  // --- EDIT & DELETE HANDLERS ---
+
+  const handleEditClick = (post: Post) => {
+    setEditingPostId(post.id);
+    setEditContent(post.content);
+    setOpenMenuId(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingPostId(null);
+    setEditContent('');
+  };
+
+  const handleSaveEdit = async (postId: string) => {
+    // Optimistic Update
+    setPosts(current => current.map(p => p.id === postId ? { ...p, content: editContent } : p));
+    setEditingPostId(null);
+
+    await storage.savePost({
+        id: postId,
+        userId: user.id, // Requerido para verificação, mas não atualiza
+        userName: user.name,
+        content: editContent,
+        timestamp: '', // Ignorado no update
+        likes: 0,
+        comments: []
+    });
+  };
+
+  const handleDeletePost = async (postId: string) => {
+    if(!confirm("Tem certeza que deseja excluir esta publicação?")) return;
+
+    // Optimistic Delete
+    setPosts(current => current.filter(p => p.id !== postId));
+    setOpenMenuId(null);
+
+    await storage.deletePost(postId);
+    onUpdateUser({ ...user, postsCount: Math.max(0, user.postsCount - 1) });
+    storage.saveUser({ ...user, postsCount: Math.max(0, user.postsCount - 1) });
   };
 
   const handleLike = async (postId: string) => {
-    // Optimistic Update Instantâneo
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
@@ -138,7 +246,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         }
         return p;
     }));
-
     await storage.toggleLike(postId, user.id);
   };
 
@@ -153,14 +260,25 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
-    // Optimistic: Adiciona comentário visualmente antes do banco confirmar (se tivéssemos a estrutura completa aqui)
-    // Para simplificar, limpamos o input e chamamos refresh
+    // Adiciona comentário visualmente (mock ID para rapidez)
+    const newComment: Comment = {
+        id: 'temp-' + Date.now(),
+        text: text,
+        timestamp: new Date().toISOString(),
+        userId: user.id,
+        userName: user.name,
+        avatarUrl: user.avatarUrl,
+        avatarCor: user.avatarCor
+    };
+
+    setPosts(current => current.map(p => {
+        if(p.id === postId) return { ...p, comments: [...(p.comments || []), newComment] };
+        return p;
+    }));
+    
     setCommentInputs({ ...commentInputs, [postId]: '' });
     
     await storage.addComment(postId, user.id, text);
-    
-    await fetchPosts(true); // Força refresh do cache
-
     onUpdateUser({ ...user, xp: user.xp + 5 });
     storage.saveUser({ ...user, xp: user.xp + 5 });
   };
@@ -248,7 +366,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
            </div>
         ) : posts.length > 0 ? (
           posts.map((post) => (
-            <div key={post.id} className="bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition apple-shadow-hover animate-fadeIn">
+            <div key={post.id} className="bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition apple-shadow-hover animate-fadeIn relative">
                 <div className="flex items-center gap-3 mb-4">
                   <Avatar 
                     name={post.userName} 
@@ -258,35 +376,80 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                     className="!text-apple-secondary" 
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-apple-text text-sm leading-tight truncate">{post.userName}</h4>
-                      
-                      {/* Botão Seguir no Feed */}
-                      {post.userId !== user.id && (
-                        <>
-                          <span className="text-apple-tertiary">•</span>
-                          <button 
-                            onClick={() => onFollow(post.userId)}
-                            disabled={user.followingIds?.includes(post.userId)}
-                            className={`text-[10px] font-black uppercase tracking-widest apple-transition ${user.followingIds?.includes(post.userId) ? 'text-apple-tertiary cursor-default' : 'text-ejn-medium hover:text-ejn-dark'}`}
-                          >
-                            {user.followingIds?.includes(post.userId) ? 'Seguindo' : 'Seguir'}
-                          </button>
-                        </>
-                      )}
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-apple-text text-sm leading-tight truncate">{post.userName}</h4>
+                          
+                          {/* Follow Button */}
+                          {post.userId !== user.id && (
+                            <>
+                              <span className="text-apple-tertiary">•</span>
+                              <button 
+                                onClick={() => onFollow(post.userId)}
+                                disabled={user.followingIds?.includes(post.userId)}
+                                className={`text-[10px] font-black uppercase tracking-widest apple-transition ${user.followingIds?.includes(post.userId) ? 'text-apple-tertiary cursor-default' : 'text-ejn-medium hover:text-ejn-dark'}`}
+                              >
+                                {user.followingIds?.includes(post.userId) ? 'Seguindo' : 'Seguir'}
+                              </button>
+                            </>
+                          )}
+                        </div>
 
-                      <span className="shrink-0 bg-ejn-gold/10 text-ejn-medium text-[8px] md:text-[9px] font-black px-1.5 py-0.5 rounded-md uppercase ml-auto">
-                        Aluno EJN
-                      </span>
+                        {/* MENU DE OPÇÕES DO DONO DO POST */}
+                        {user.id === post.userId && (
+                          <div className="relative">
+                            <button 
+                              onClick={() => setOpenMenuId(openMenuId === post.id ? null : post.id)}
+                              className="text-apple-secondary hover:text-apple-text p-1 rounded-full hover:bg-apple-bg transition-colors"
+                            >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z"/>
+                              </svg>
+                            </button>
+                            
+                            {openMenuId === post.id && (
+                              <div ref={menuRef} className="absolute right-0 top-8 w-32 bg-white rounded-xl shadow-xl border border-apple-border z-20 overflow-hidden animate-fadeIn">
+                                <button 
+                                  onClick={() => handleEditClick(post)}
+                                  className="w-full text-left px-4 py-3 text-xs font-bold text-apple-text hover:bg-apple-bg flex items-center gap-2"
+                                >
+                                  <Icons.Edit className="w-3 h-3" /> Editar
+                                </button>
+                                <button 
+                                  onClick={() => handleDeletePost(post.id)}
+                                  className="w-full text-left px-4 py-3 text-xs font-bold text-red-500 hover:bg-red-50 flex items-center gap-2"
+                                >
+                                  <Icons.X className="w-3 h-3" /> Excluir
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
                     </div>
                     <p className="text-[10px] md:text-[11px] text-apple-secondary font-medium">Postado em {new Date(post.timestamp).toLocaleDateString()}</p>
                   </div>
                 </div>
                 
-                {post.content && (
-                  <p className="text-apple-text font-medium text-sm md:text-base leading-relaxed whitespace-pre-wrap mb-4">
-                    {post.content}
-                  </p>
+                {/* CONTEÚDO DO POST (Modo Leitura ou Edição) */}
+                {editingPostId === post.id ? (
+                  <div className="mb-4 bg-apple-bg p-3 rounded-xl border border-ejn-gold/50">
+                     <textarea 
+                        className="w-full bg-transparent border-none text-sm text-apple-text focus:ring-0 resize-none"
+                        rows={3}
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                     />
+                     <div className="flex justify-end gap-2 mt-2">
+                        <button onClick={handleCancelEdit} className="text-xs font-bold text-apple-secondary hover:text-apple-text">Cancelar</button>
+                        <button onClick={() => handleSaveEdit(post.id)} className="text-xs font-bold text-white bg-ejn-gold px-3 py-1 rounded-full">Salvar</button>
+                     </div>
+                  </div>
+                ) : (
+                  post.content && (
+                    <p className="text-apple-text font-medium text-sm md:text-base leading-relaxed whitespace-pre-wrap mb-4">
+                      {post.content}
+                    </p>
+                  )
                 )}
 
                 {post.imageUrl && (
@@ -326,7 +489,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 {openComments.has(post.id) && (
                   <div className="mt-4 pt-4 border-t border-apple-bg animate-fadeIn space-y-4">
                     {(post.comments || []).map(comment => (
-                      <div key={comment.id} className="flex gap-3">
+                      <div key={comment.id} className="flex gap-3 animate-fadeIn">
                         <Avatar name={comment.userName} bgColor={comment.avatarCor} url={comment.avatarUrl} size="xs" />
                         <div className="flex-1 bg-apple-bg rounded-2xl px-4 py-2">
                            <p className="text-[10px] font-bold text-apple-text">{comment.userName}</p>

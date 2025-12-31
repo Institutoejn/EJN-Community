@@ -63,14 +63,9 @@ export const storage = {
 
   getCurrentUser: async (skipNetwork = false): Promise<User | null> => {
     try {
-        // 1. INSTANT RETURN: Se existir cache local, retorna IMEDIATAMENTE.
-        // Isso permite que a UI carregue em < 50ms.
         const cachedUser = localCache.get<User>(CACHE_KEYS.USER);
-        
-        // Se a flag skipNetwork for true, retornamos apenas o cache (usado no boot inicial do App.tsx)
         if (skipNetwork && cachedUser) return cachedUser;
 
-        // 2. NETWORK FETCH (Background): Valida sessão e busca dados frescos
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error || !session) return null;
 
@@ -80,14 +75,10 @@ export const storage = {
             .eq('id', session.user.id)
             .single();
 
-        if (profileError || !profile) {
-             // Se falhar na rede mas tiver cache, mantemos o cache para não quebrar a exp
-             return cachedUser || null;
-        }
+        if (profileError || !profile) return cachedUser || null;
 
         const mappedUser = mapUser(profile);
 
-        // Fast Track Followers
         try {
             const secondaryDataPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
@@ -103,7 +94,6 @@ export const storage = {
             mappedUser.followersCount = followersResult.count || 0;
 
         } catch (secondaryError) {
-             // Em caso de erro/timeout, preserva dados antigos do cache se existirem
              if (cachedUser) {
                  mappedUser.followingIds = cachedUser.followingIds;
                  mappedUser.followingCount = cachedUser.followingCount;
@@ -111,13 +101,12 @@ export const storage = {
              }
         }
 
-        // 3. UPDATE CACHE: Salva a versão mais nova para o próximo reload
         localCache.set(CACHE_KEYS.USER, mappedUser);
         return mappedUser;
 
     } catch (fatalError) {
         console.error("Erro fatal storage:", fatalError);
-        return localCache.get<User>(CACHE_KEYS.USER); // Fallback final
+        return localCache.get<User>(CACHE_KEYS.USER);
     }
   },
 
@@ -143,13 +132,8 @@ export const storage = {
   },
 
   getUsers: async (forceRefresh = false): Promise<User[]> => {
-    // Cache First
     const cached = localCache.get<User[]>(CACHE_KEYS.USERS);
-    if (!forceRefresh && cached) {
-        // Dispara refresh em background se necessário, mas retorna cache agora
-        // (Para simplificar, retornamos cache e deixamos o refresh explícito atualizar depois)
-        return cached;
-    }
+    if (!forceRefresh && cached) return cached;
 
     const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false }).limit(50);
     if (error) return cached || [];
@@ -160,8 +144,15 @@ export const storage = {
   },
 
   saveUser: async (user: User) => {
-    // Atualiza cache local imediatamente para feedback instantâneo
+    // Atualiza cache local para refletir na UI imediatamente
     localCache.set(CACHE_KEYS.USER, user);
+    
+    // Atualiza cache de lista de usuários também se existir
+    const cachedUsers = localCache.get<User[]>(CACHE_KEYS.USERS);
+    if (cachedUsers) {
+        const updatedList = cachedUsers.map(u => u.id === user.id ? user : u);
+        localCache.set(CACHE_KEYS.USERS, updatedList);
+    }
     
     const dbUser = {
       name: user.name,
@@ -173,13 +164,25 @@ export const storage = {
       xp: user.xp,
       pontos_totais: user.pontosTotais,
       likes_received: user.likesReceived,
-      posts_count: user.postsCount
+      posts_count: user.postsCount,
+      role: user.role, // Importante para admin mudar role
+      status: user.status
     };
 
-    // Fire and forget (não espera resposta para não travar UI)
     supabase.from('users').update(dbUser).eq('id', user.id).then(({ error }) => {
         if (error) console.error('Erro sync user:', error);
     });
+  },
+
+  deleteUser: async (userId: string) => {
+    // Nota: Em produção, deletar Auth Users requer Supabase Service Role (backend).
+    // Aqui deletamos o perfil público.
+    
+    // Limpa caches
+    const users = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
+    localCache.set(CACHE_KEYS.USERS, users.filter(u => u.id !== userId));
+
+    await supabase.from('users').delete().eq('id', userId);
   },
 
   // --- POSTS ---
@@ -204,7 +207,7 @@ export const storage = {
       `)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(30);
+      .limit(50); // Aumentado para admin ver mais
 
     if (error) return cached || [];
 
@@ -236,30 +239,26 @@ export const storage = {
   },
 
   savePost: async (post: Post) => {
-    // Atualiza cache local primeiro
     const currentPosts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
-    // Adiciona temporariamente ao topo (optimistic UI)
-    if (!post.id) {
-        const tempPost = { ...post, id: 'temp-' + Date.now(), timestamp: new Date().toISOString() };
-        localCache.set(CACHE_KEYS.POSTS, [tempPost, ...currentPosts]);
-    }
+    
+    if (post.id && post.id.length > 10 && !post.id.startsWith('temp-')) {
+        const updatedCache = currentPosts.map(p => p.id === post.id ? { ...p, content: post.content, isPinned: post.isPinned } : p);
+        localCache.set(CACHE_KEYS.POSTS, updatedCache);
 
-    if (!post.id || post.id.length < 10) { 
+        await supabase.from('posts').update({
+            is_pinned: post.isPinned,
+            content: post.content
+        }).eq('id', post.id);
+    } else {
         await supabase.from('posts').insert({
             user_id: post.userId,
             content: post.content,
             image_url: post.imageUrl
         });
-    } else {
-        await supabase.from('posts').update({
-            is_pinned: post.isPinned,
-            content: post.content
-        }).eq('id', post.id);
     }
   },
 
   toggleLike: async (postId: string, userId: string) => {
-      // Optimistic update já feito na UI, aqui só chama o banco
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
       if (data) {
           await supabase.from('likes').delete().eq('id', data.id);
@@ -277,10 +276,8 @@ export const storage = {
   },
 
   deletePost: async (postId: string) => {
-      // Remove do cache local imediatamente
       const currentPosts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
       localCache.set(CACHE_KEYS.POSTS, currentPosts.filter(p => p.id !== postId));
-      
       await supabase.from('posts').delete().eq('id', postId);
   },
 
@@ -288,10 +285,11 @@ export const storage = {
 
   getMissions: async (): Promise<Mission[]> => {
     const cached = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS);
-    if (cached) return cached;
-
-    const { data, error } = await supabase.from('missions').select('*').eq('is_active', true);
-    if (error) return [];
+    // Sempre tentar fetch fresco se for admin, mas por simplicidade usamos a lógica padrão
+    // Adicionamos verificação de rede para admin painel
+    const { data, error } = await supabase.from('missions').select('*').order('created_at', { ascending: false });
+    
+    if (error) return cached || [];
     
     const mapped = data.map((m: any) => ({
         id: m.id,
@@ -308,12 +306,42 @@ export const storage = {
     return mapped;
   },
 
-  getRewards: async (): Promise<RewardItem[]> => {
-    const cached = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS);
-    if (cached) return cached;
+  saveMissions: async (missions: Mission[]) => {
+      // Atualiza cache
+      const current = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
+      // Mescla
+      const updatedCache = [...current];
+      missions.forEach(m => {
+          const idx = updatedCache.findIndex(ex => ex.id === m.id);
+          if (idx >= 0) updatedCache[idx] = m;
+          else updatedCache.push(m);
+      });
+      localCache.set(CACHE_KEYS.MISSIONS, updatedCache);
 
-    const { data, error } = await supabase.from('rewards').select('*');
-    if (error) return [];
+      const dbMissions = missions.map(m => ({
+          id: m.id.startsWith('m') && m.id.length < 15 ? undefined : m.id, // Se for ID temporário gerado no front, remove para DB gerar UUID
+          title: m.title,
+          description: m.desc,
+          reward_xp: m.rewardXP,
+          reward_coins: m.rewardCoins,
+          icon: m.icon,
+          type: m.type,
+          is_active: m.isActive
+      }));
+      
+      const { error } = await supabase.from('missions').upsert(dbMissions);
+      if (error) console.error("Erro ao salvar missão", error);
+  },
+
+  deleteMission: async (id: string) => {
+      const current = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
+      localCache.set(CACHE_KEYS.MISSIONS, current.filter(m => m.id !== id));
+      await supabase.from('missions').delete().eq('id', id);
+  },
+
+  getRewards: async (): Promise<RewardItem[]> => {
+    const { data, error } = await supabase.from('rewards').select('*').order('cost', { ascending: true });
+    if (error) return localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
     
     const mapped = data.map((r: any) => ({
         id: r.id,
@@ -331,21 +359,41 @@ export const storage = {
     return mapped;
   },
 
-  // --- FOLLOW SYSTEM ---
-  
-  followUser: async (followerId: string, followingId: string) => {
-      await supabase.from('follows').insert({
-          follower_id: followerId,
-          following_id: followingId
+  saveRewards: async (rewards: RewardItem[]) => {
+      const current = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
+      const updatedCache = [...current];
+      rewards.forEach(r => {
+          const idx = updatedCache.findIndex(ex => ex.id === r.id);
+          if (idx >= 0) updatedCache[idx] = r;
+          else updatedCache.push(r);
       });
+      localCache.set(CACHE_KEYS.REWARDS, updatedCache);
+
+      const dbRewards = rewards.map(r => ({
+          id: r.id.startsWith('r') && r.id.length < 15 ? undefined : r.id,
+          title: r.title,
+          description: r.desc,
+          long_desc: r.longDesc,
+          cost: r.cost,
+          icon: r.icon,
+          image_url: r.imageUrl,
+          stock: r.stock,
+          category: r.category
+      }));
+      
+      const { error } = await supabase.from('rewards').upsert(dbRewards);
+      if (error) console.error("Erro ao salvar recompensa", error);
+  },
+
+  deleteReward: async (id: string) => {
+      const current = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
+      localCache.set(CACHE_KEYS.REWARDS, current.filter(r => r.id !== id));
+      await supabase.from('rewards').delete().eq('id', id);
   },
 
   // --- SETTINGS ---
 
   getSettings: async (): Promise<AppSettings> => {
-    const cached = localCache.get<AppSettings>(CACHE_KEYS.SETTINGS);
-    if (cached) return cached;
-
     const { data } = await supabase.from('settings').select('*').single();
     if (!data) return {
         platformName: 'Rede Social EJN',
@@ -359,40 +407,27 @@ export const storage = {
         platformName: data.platform_name,
         xpPerPost: data.xp_per_post,
         xpPerComment: data.xp_per_comment,
-        xpPerLikeReceived: 5, 
+        xpPerLikeReceived: data.xp_per_like, 
         coinsPerPost: data.coins_per_post
     };
     localCache.set(CACHE_KEYS.SETTINGS, settings);
     return settings;
   },
 
-  saveMissions: async (missions: Mission[]) => {
-      localCache.set(CACHE_KEYS.MISSIONS, missions);
-      const dbMissions = missions.map(m => ({
-          id: m.id.includes('-') ? m.id : undefined, 
-          title: m.title,
-          description: m.desc,
-          reward_xp: m.rewardXP,
-          reward_coins: m.rewardCoins,
-          icon: m.icon,
-          type: m.type
-      }));
-      await supabase.from('missions').upsert(dbMissions);
-  },
-
-  saveRewards: async (rewards: RewardItem[]) => {
-      localCache.set(CACHE_KEYS.REWARDS, rewards);
-      const dbRewards = rewards.map(r => ({
-          id: r.id.includes('-') ? r.id : undefined,
-          title: r.title,
-          description: r.desc,
-          cost: r.cost,
-          icon: r.icon,
-          image_url: r.imageUrl,
-          stock: r.stock,
-          category: r.category
-      }));
-      await supabase.from('rewards').upsert(dbRewards);
+  saveSettings: async (settings: AppSettings) => {
+      localCache.set(CACHE_KEYS.SETTINGS, settings);
+      
+      // Assume ID 1 para settings global
+      const dbSettings = {
+          id: 1, 
+          platform_name: settings.platformName,
+          xp_per_post: settings.xpPerPost,
+          xp_per_comment: settings.xpPerComment,
+          xp_per_like: settings.xpPerLikeReceived,
+          coins_per_post: settings.coinsPerPost
+      };
+      
+      await supabase.from('settings').upsert(dbSettings);
   },
   
   // Helpers para sessão
@@ -411,5 +446,12 @@ export const storage = {
           password,
           options: { data: metaData }
       });
-  }
+  },
+
+  followUser: async (followerId: string, followingId: string) => {
+    await supabase.from('follows').insert({
+        follower_id: followerId,
+        following_id: followingId
+    });
+  },
 };
