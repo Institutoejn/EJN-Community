@@ -39,7 +39,13 @@ const Avatar: React.FC<AvatarProps> = ({ name, bgColor, url, size = 'md', classN
       ${className}
     `}>
       {url ? (
-        <img src={url} alt={name} className="w-full h-full object-cover" />
+        <img 
+          src={url} 
+          alt={name} 
+          className="w-full h-full object-cover" 
+          loading="lazy"
+          decoding="async"
+        />
       ) : (
         initials
       )}

@@ -24,51 +24,42 @@ const App: React.FC = () => {
     let mounted = true;
 
     const initApp = async () => {
-      // FAST TRACK: Timeout reduzido para 5 segundos conforme solicitado.
-      // Se a conexão for muito lenta, liberamos a interface para o usuário tentar novamente.
-      const timeoutPromise = new Promise((resolve) => 
-        setTimeout(() => resolve({ timeout: true }), 5000)
-      );
-
-      // Carregamento real
-      const loadPromise = (async () => {
-        try {
-          // Check de sessão é local e instantâneo
-          const { data: { session }, error } = await supabase.auth.getSession();
-          if (error || !session) return { user: null };
-
-          // Busca otimizada de usuário
-          const user = await storage.getCurrentUser();
-          return { user };
-        } catch (err) {
-          console.error("Erro interno no loadPromise:", err);
-          return { error: err };
-        }
-      })();
-
-      // Corrida: Carregamento vs 5 segundos
-      const result: any = await Promise.race([loadPromise, timeoutPromise]);
-
-      if (!mounted) return;
-
-      if (result.timeout) {
-        console.warn("Fast Timeout: Banco demorou mais que 5s. Liberando interface.");
-        setLoading(false);
-        return;
-      }
-
-      if (result.error) {
-        setLoadingError(true);
-        setLoading(false);
-        return;
-      }
-
-      if (result.user) {
-        setCurrentUser(result.user);
-        setLoadingError(false);
-      }
+      // 1. INSTANT BOOT: Tenta carregar do cache local primeiro (0ms delay)
+      const cachedUser = await storage.getCurrentUser(true); // true = skip network
       
-      setLoading(false);
+      if (cachedUser) {
+          if (mounted) {
+              setCurrentUser(cachedUser);
+              setLoading(false); // Libera a UI imediatamente
+          }
+      }
+
+      // 2. BACKGROUND VALIDATION: Verifica se o usuário ainda é válido e busca dados frescos
+      // Isso acontece enquanto o usuário já está vendo o app (silencioso)
+      try {
+          const freshUser = await storage.getCurrentUser(false); // false = network fetch
+          
+          if (mounted) {
+             if (freshUser) {
+                 setCurrentUser(freshUser); // Atualiza com dados frescos
+                 setLoading(false);
+             } else if (!cachedUser) {
+                 // Se não tinha cache e a rede falhou/não tem sessão
+                 setLoading(false);
+             }
+             // Se tinha cache mas freshUser retornou null (ex: logout em outra aba ou sessão expirada)
+             if (cachedUser && !freshUser) {
+                 // Verifica sessão real
+                 const { data: { session } } = await supabase.auth.getSession();
+                 if (!session) {
+                     setCurrentUser(null); // Logout forçado
+                 }
+             }
+          }
+      } catch (err) {
+          console.warn("Background update failed, using cache if available");
+          if (!cachedUser && mounted) setLoading(false);
+      }
     };
 
     initApp();
@@ -80,9 +71,13 @@ const App: React.FC = () => {
           setCurrentView('FEED');
           setLoading(false);
         }
-      } else if (event === 'SIGNED_IN' && session && !currentUser) {
+      } else if (event === 'SIGNED_IN' && session) {
+         // Login detectado
          const user = await storage.getCurrentUser();
-         if (mounted && user) setCurrentUser(user);
+         if (mounted && user) {
+             setCurrentUser(user);
+             setLoading(false);
+         }
       }
     });
 
@@ -122,29 +117,30 @@ const App: React.FC = () => {
     if (!currentUser || currentUser.id === targetId) return;
     if (currentUser.followingIds.includes(targetId)) return;
 
+    // Optimistic UI Update
+    const updatedUser: User = {
+      ...currentUser,
+      followingCount: currentUser.followingCount + 1,
+      followingIds: [...currentUser.followingIds, targetId],
+      xp: currentUser.xp + 10
+    };
+    handleUpdateUser(updatedUser);
+
     try {
         await storage.followUser(currentUser.id, targetId);
-
-        const updatedUser: User = {
-          ...currentUser,
-          followingCount: currentUser.followingCount + 1,
-          followingIds: [...currentUser.followingIds, targetId],
-          xp: currentUser.xp + 10
-        };
-        
-        handleUpdateUser(updatedUser);
+        // Persist local state
+        await storage.saveUser(updatedUser);
         alert('Conexão estabelecida! +10 XP de bônus por Networking.');
     } catch (error) {
         console.error("Erro ao seguir usuário:", error);
     }
   };
 
-  // TELA DE CARREGAMENTO
+  // TELA DE CARREGAMENTO (Só aparece se não houver Cache E não houver Rede)
   if (loading) {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
-        {/* Removido texto pulsante para visual mais limpo e rápido */}
       </div>
     );
   }
@@ -166,15 +162,6 @@ const App: React.FC = () => {
              className="w-full py-3 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium transition-colors mb-3"
            >
              Tentar Novamente
-           </button>
-           <button 
-             onClick={async () => {
-                 await storage.signOut();
-                 window.location.reload();
-             }}
-             className="w-full py-3 bg-transparent text-apple-secondary border border-apple-border rounded-xl font-bold uppercase tracking-widest hover:bg-apple-bg transition-colors"
-           >
-             Sair
            </button>
         </div>
       </div>

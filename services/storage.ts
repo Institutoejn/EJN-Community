@@ -2,22 +2,33 @@
 import { User, Post, Mission, RewardItem, AppSettings, Comment } from '../types';
 import { supabase } from './supabase';
 
-// --- CACHE SYSTEM (TURBO MODE) ---
-// Armazena dados em memória para evitar requests repetidos e garantir navegação instantânea.
-const CACHE_DURATION = 60000; // 1 minuto de cache
-const memoryCache = {
-  posts: { data: null as Post[] | null, timestamp: 0 },
-  users: { data: null as User[] | null, timestamp: 0 },
-  missions: { data: null as Mission[] | null, timestamp: 0 },
-  rewards: { data: null as RewardItem[] | null, timestamp: 0 }
+// --- TURBO CACHE SYSTEM (LOCAL STORAGE + MEMORY) ---
+const CACHE_KEYS = {
+  USER: 'ejn_user_cache',
+  POSTS: 'ejn_posts_cache',
+  USERS: 'ejn_ranking_cache',
+  MISSIONS: 'ejn_missions_cache',
+  REWARDS: 'ejn_rewards_cache',
+  SETTINGS: 'ejn_settings_cache'
 };
 
-const isCacheValid = (key: keyof typeof memoryCache) => {
-  const now = Date.now();
-  return memoryCache[key].data && (now - memoryCache[key].timestamp < CACHE_DURATION);
+// Helper para ler/gravar cache local instantâneo
+const localCache = {
+  get: <T>(key: string): T | null => {
+    try {
+      const item = localStorage.getItem(key);
+      return item ? JSON.parse(item) : null;
+    } catch { return null; }
+  },
+  set: (key: string, data: any) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) { console.warn('Cache limit reached'); }
+  },
+  clear: () => {
+    Object.values(CACHE_KEYS).forEach(k => localStorage.removeItem(k));
+  }
 };
-
-// --- END CACHE SYSTEM ---
 
 // Utilitário para mapear User DB (snake_case) -> User App (camelCase)
 const mapUser = (dbUser: any): User => ({
@@ -50,13 +61,19 @@ const mapUser = (dbUser: any): User => ({
 export const storage = {
   // --- AUTH & USER ---
 
-  getCurrentUser: async (): Promise<User | null> => {
+  getCurrentUser: async (skipNetwork = false): Promise<User | null> => {
     try {
-        // Check de sessão é rápido pois usa o localStorage do supabase-js
+        // 1. INSTANT RETURN: Se existir cache local, retorna IMEDIATAMENTE.
+        // Isso permite que a UI carregue em < 50ms.
+        const cachedUser = localCache.get<User>(CACHE_KEYS.USER);
+        
+        // Se a flag skipNetwork for true, retornamos apenas o cache (usado no boot inicial do App.tsx)
+        if (skipNetwork && cachedUser) return cachedUser;
+
+        // 2. NETWORK FETCH (Background): Valida sessão e busca dados frescos
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error || !session) return null;
 
-        // NÃO usamos cache para o Current User para garantir que XP/Coins estejam sempre atualizados
         const { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
@@ -64,13 +81,13 @@ export const storage = {
             .single();
 
         if (profileError || !profile) {
-            console.error("Erro ao carregar perfil:", profileError);
-            return null;
+             // Se falhar na rede mas tiver cache, mantemos o cache para não quebrar a exp
+             return cachedUser || null;
         }
 
         const mappedUser = mapUser(profile);
 
-        // Fast Track: Tenta carregar seguidores com timeout de 2s
+        // Fast Track Followers
         try {
             const secondaryDataPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
@@ -78,7 +95,6 @@ export const storage = {
             ]);
 
             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject('timeout'), 2000));
-
             const [followingResult, followersResult] = await Promise.race([secondaryDataPromise, timeoutPromise]) as any;
 
             const following = followingResult.data;
@@ -87,13 +103,21 @@ export const storage = {
             mappedUser.followersCount = followersResult.count || 0;
 
         } catch (secondaryError) {
-            // Silently ignore timeout/error for secondary stats to keep app fast
+             // Em caso de erro/timeout, preserva dados antigos do cache se existirem
+             if (cachedUser) {
+                 mappedUser.followingIds = cachedUser.followingIds;
+                 mappedUser.followingCount = cachedUser.followingCount;
+                 mappedUser.followersCount = cachedUser.followersCount;
+             }
         }
 
+        // 3. UPDATE CACHE: Salva a versão mais nova para o próximo reload
+        localCache.set(CACHE_KEYS.USER, mappedUser);
         return mappedUser;
+
     } catch (fatalError) {
-        console.error("Erro fatal no storage.getCurrentUser:", fatalError);
-        return null;
+        console.error("Erro fatal storage:", fatalError);
+        return localCache.get<User>(CACHE_KEYS.USER); // Fallback final
     }
   },
 
@@ -115,34 +139,30 @@ export const storage = {
           likes_received: 0,
           streak: 0
       });
-      if (error) {
-          console.error("Erro ao criar perfil:", error);
-          throw error;
-      }
+      if (error) throw error;
   },
 
-  getUsers: async (): Promise<User[]> => {
-    // Ranking Cache
-    if (isCacheValid('users')) {
-        return memoryCache.users.data!;
+  getUsers: async (forceRefresh = false): Promise<User[]> => {
+    // Cache First
+    const cached = localCache.get<User[]>(CACHE_KEYS.USERS);
+    if (!forceRefresh && cached) {
+        // Dispara refresh em background se necessário, mas retorna cache agora
+        // (Para simplificar, retornamos cache e deixamos o refresh explícito atualizar depois)
+        return cached;
     }
 
-    const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false }).limit(50); // Limitando a 50 para performance
-    if (error) {
-      console.error('Erro ao buscar usuários:', error);
-      return [];
-    }
-    const mapped = data.map(mapUser);
+    const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false }).limit(50);
+    if (error) return cached || [];
     
-    // Update Cache
-    memoryCache.users = { data: mapped, timestamp: Date.now() };
+    const mapped = data.map(mapUser);
+    localCache.set(CACHE_KEYS.USERS, mapped);
     return mapped;
   },
 
   saveUser: async (user: User) => {
-    // Invalida cache de ranking pois pontuação mudou
-    memoryCache.users.timestamp = 0;
-
+    // Atualiza cache local imediatamente para feedback instantâneo
+    localCache.set(CACHE_KEYS.USER, user);
+    
     const dbUser = {
       name: user.name,
       bio: user.bio,
@@ -156,17 +176,17 @@ export const storage = {
       posts_count: user.postsCount
     };
 
-    const { error } = await supabase.from('users').update(dbUser).eq('id', user.id);
-    if (error) console.error('Erro ao atualizar usuário:', error);
+    // Fire and forget (não espera resposta para não travar UI)
+    supabase.from('users').update(dbUser).eq('id', user.id).then(({ error }) => {
+        if (error) console.error('Erro sync user:', error);
+    });
   },
 
   // --- POSTS ---
 
   getPosts: async (forceRefresh = false): Promise<Post[]> => {
-    // Feed Cache - Instant Load
-    if (!forceRefresh && isCacheValid('posts')) {
-        return memoryCache.posts.data!;
-    }
+    const cached = localCache.get<Post[]>(CACHE_KEYS.POSTS);
+    if (!forceRefresh && cached) return cached;
 
     const { data: { session } } = await supabase.auth.getSession();
     const currentUserId = session?.user?.id;
@@ -184,12 +204,9 @@ export const storage = {
       `)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(30); // Paginação implícita para velocidade
+      .limit(30);
 
-    if (error) {
-      console.error('Erro ao buscar posts:', error);
-      return [];
-    }
+    if (error) return cached || [];
 
     const mappedPosts = data.map((p: any) => ({
       id: p.id,
@@ -214,38 +231,36 @@ export const storage = {
       })).sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     }));
 
-    // Update Cache
-    memoryCache.posts = { data: mappedPosts, timestamp: Date.now() };
+    localCache.set(CACHE_KEYS.POSTS, mappedPosts);
     return mappedPosts;
   },
 
   savePost: async (post: Post) => {
-    // Ao salvar post, invalidamos o cache para forçar recarregamento na próxima leitura
-    memoryCache.posts.timestamp = 0;
+    // Atualiza cache local primeiro
+    const currentPosts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
+    // Adiciona temporariamente ao topo (optimistic UI)
+    if (!post.id) {
+        const tempPost = { ...post, id: 'temp-' + Date.now(), timestamp: new Date().toISOString() };
+        localCache.set(CACHE_KEYS.POSTS, [tempPost, ...currentPosts]);
+    }
 
     if (!post.id || post.id.length < 10) { 
-        // Insert
-        const { error } = await supabase.from('posts').insert({
+        await supabase.from('posts').insert({
             user_id: post.userId,
             content: post.content,
             image_url: post.imageUrl
         });
-        if (error) console.error("Erro ao criar post", error);
     } else {
-        // Update (ex: pin)
-        const { error } = await supabase.from('posts').update({
+        await supabase.from('posts').update({
             is_pinned: post.isPinned,
             content: post.content
         }).eq('id', post.id);
-        if (error) console.error("Erro ao atualizar post", error);
     }
   },
 
   toggleLike: async (postId: string, userId: string) => {
-      // Likes são atualizados otimisticamente na UI, não precisamos invalidar cache imediatamente
-      // para não causar glitch visual
+      // Optimistic update já feito na UI, aqui só chama o banco
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
-      
       if (data) {
           await supabase.from('likes').delete().eq('id', data.id);
       } else {
@@ -254,24 +269,26 @@ export const storage = {
   },
 
   addComment: async (postId: string, userId: string, content: string) => {
-      memoryCache.posts.timestamp = 0; // Invalida cache para mostrar comentário
-      const { error } = await supabase.from('comments').insert({
+      await supabase.from('comments').insert({
           post_id: postId,
           user_id: userId,
           content: content
       });
-      if(error) console.error("Erro ao comentar", error);
   },
 
   deletePost: async (postId: string) => {
-      memoryCache.posts.timestamp = 0;
+      // Remove do cache local imediatamente
+      const currentPosts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
+      localCache.set(CACHE_KEYS.POSTS, currentPosts.filter(p => p.id !== postId));
+      
       await supabase.from('posts').delete().eq('id', postId);
   },
 
   // --- MISSIONS & REWARDS ---
 
   getMissions: async (): Promise<Mission[]> => {
-    if (isCacheValid('missions')) return memoryCache.missions.data!;
+    const cached = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS);
+    if (cached) return cached;
 
     const { data, error } = await supabase.from('missions').select('*').eq('is_active', true);
     if (error) return [];
@@ -287,12 +304,13 @@ export const storage = {
         isActive: m.is_active
     }));
 
-    memoryCache.missions = { data: mapped, timestamp: Date.now() };
+    localCache.set(CACHE_KEYS.MISSIONS, mapped);
     return mapped;
   },
 
   getRewards: async (): Promise<RewardItem[]> => {
-    if (isCacheValid('rewards')) return memoryCache.rewards.data!;
+    const cached = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS);
+    if (cached) return cached;
 
     const { data, error } = await supabase.from('rewards').select('*');
     if (error) return [];
@@ -309,24 +327,25 @@ export const storage = {
         category: r.category
     }));
 
-    memoryCache.rewards = { data: mapped, timestamp: Date.now() };
+    localCache.set(CACHE_KEYS.REWARDS, mapped);
     return mapped;
   },
 
   // --- FOLLOW SYSTEM ---
   
   followUser: async (followerId: string, followingId: string) => {
-      memoryCache.users.timestamp = 0; // Invalida ranking
-      const { error } = await supabase.from('follows').insert({
+      await supabase.from('follows').insert({
           follower_id: followerId,
           following_id: followingId
       });
-      if(error) console.error("Erro ao seguir", error);
   },
 
   // --- SETTINGS ---
 
   getSettings: async (): Promise<AppSettings> => {
+    const cached = localCache.get<AppSettings>(CACHE_KEYS.SETTINGS);
+    if (cached) return cached;
+
     const { data } = await supabase.from('settings').select('*').single();
     if (!data) return {
         platformName: 'Rede Social EJN',
@@ -335,17 +354,20 @@ export const storage = {
         xpPerLikeReceived: 5,
         coinsPerPost: 10
     };
-    return {
+    
+    const settings = {
         platformName: data.platform_name,
         xpPerPost: data.xp_per_post,
         xpPerComment: data.xp_per_comment,
         xpPerLikeReceived: 5, 
         coinsPerPost: data.coins_per_post
     };
+    localCache.set(CACHE_KEYS.SETTINGS, settings);
+    return settings;
   },
 
   saveMissions: async (missions: Mission[]) => {
-      memoryCache.missions.timestamp = 0;
+      localCache.set(CACHE_KEYS.MISSIONS, missions);
       const dbMissions = missions.map(m => ({
           id: m.id.includes('-') ? m.id : undefined, 
           title: m.title,
@@ -359,7 +381,7 @@ export const storage = {
   },
 
   saveRewards: async (rewards: RewardItem[]) => {
-      memoryCache.rewards.timestamp = 0;
+      localCache.set(CACHE_KEYS.REWARDS, rewards);
       const dbRewards = rewards.map(r => ({
           id: r.id.includes('-') ? r.id : undefined,
           title: r.title,
@@ -375,11 +397,7 @@ export const storage = {
   
   // Helpers para sessão
   signOut: async () => {
-      // Limpa todo o cache ao sair
-      memoryCache.posts = { data: null, timestamp: 0 };
-      memoryCache.users = { data: null, timestamp: 0 };
-      memoryCache.missions = { data: null, timestamp: 0 };
-      memoryCache.rewards = { data: null, timestamp: 0 };
+      localCache.clear();
       await supabase.auth.signOut();
   },
   
