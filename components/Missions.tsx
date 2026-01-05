@@ -3,6 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { User, Mission, RewardItem } from '../types';
 import { storage } from '../services/storage';
 
+// Cache em memória para transição instantânea
+let missionsCache: Mission[] | null = null;
+let rewardsCache: RewardItem[] | null = null;
+
 interface MissionsProps {
   user: User;
   onUpdateUser: (user: User) => void;
@@ -14,27 +18,35 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
   const [activeTab, setActiveTab] = useState<Tab>('TASKS');
   const [claiming, setClaiming] = useState<string | null>(null);
   const [selectedReward, setSelectedReward] = useState<RewardItem | null>(null);
-  const [missions, setMissions] = useState<Mission[]>([]);
-  const [rewards, setRewards] = useState<RewardItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [missions, setMissions] = useState<Mission[]>(missionsCache || []);
+  const [rewards, setRewards] = useState<RewardItem[]>(rewardsCache || []);
+  const [loading, setLoading] = useState(!missionsCache || !rewardsCache);
 
   useEffect(() => {
     const loadData = async () => {
-      setLoading(true);
-      const [m, r] = await Promise.all([
-        storage.getMissions(),
-        storage.getRewards()
-      ]);
-      setMissions(m);
-      setRewards(r);
-      setLoading(false);
+      if (!missionsCache || !rewardsCache) setLoading(true);
+      
+      try {
+        const [m, r] = await Promise.all([
+          storage.getMissions(),
+          storage.getRewards()
+        ]);
+        
+        missionsCache = m;
+        rewardsCache = r;
+        
+        setMissions(m);
+        setRewards(r);
+      } catch (error) {
+        console.error("Erro ao carregar dados de missões:", error);
+      } finally {
+        setLoading(false);
+      }
     };
     loadData();
   }, []);
 
   const handleClaim = (mission: Mission) => {
-    // Simplificação: no mundo real, teríamos uma tabela de 'user_missions' para trackear status
-    // Aqui vamos assumir que se o usuário tem os requisitos (mockados), ele pode clamar
     if (claiming) return;
     
     setClaiming(mission.id);
@@ -46,7 +58,6 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
       };
       
       onUpdateUser(updatedUser);
-      // Persistir atualização
       await storage.saveUser(updatedUser);
       setClaiming(null);
     }, 1000);
@@ -72,13 +83,12 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
     }
   };
 
-  if (loading) {
+  if (loading && !missions.length && !rewards.length) {
     return <div className="p-10 text-center text-apple-tertiary text-xs font-bold uppercase tracking-widest">Carregando desafios...</div>;
   }
 
   return (
     <div className="w-full space-y-6 animate-fadeIn pb-10">
-      {/* Modal de Detalhes do Brinde */}
       {selectedReward && (
         <div className="fixed inset-0 bg-ejn-dark/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white w-full max-w-lg rounded-[32px] overflow-hidden apple-shadow animate-fadeIn my-auto">
@@ -124,7 +134,6 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
         </div>
       )}
 
-      {/* Header com Saldo */}
       <div className="bg-ejn-dark rounded-3xl p-6 md:p-8 text-white flex flex-col md:flex-row justify-between items-center gap-4 shadow-xl text-center md:text-left">
         <div>
           <h2 className="text-xl md:text-2xl font-bold">Central de Desafios</h2>
@@ -139,7 +148,6 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
         </div>
       </div>
 
-      {/* Card de Regras */}
       <div className="bg-white rounded-2xl p-4 md:p-6 apple-shadow border-l-4 border-ejn-medium flex items-start gap-4">
         <div className="w-10 h-10 bg-ejn-medium/10 rounded-xl flex items-center justify-center shrink-0">
           <svg className="w-6 h-6 text-ejn-medium" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -154,7 +162,6 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex bg-white rounded-2xl p-1 apple-shadow">
         <button 
           onClick={() => setActiveTab('TASKS')}
@@ -170,14 +177,12 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
         </button>
       </div>
 
-      {/* Content */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {activeTab === 'TASKS' ? (
           missions.map(m => (
             <div key={m.id} className="bg-white rounded-2xl p-5 apple-shadow flex flex-col justify-between group hover:scale-[1.02] apple-transition border border-apple-border/50">
               <div className="flex justify-between items-start mb-4">
                 <div className="w-12 h-12 bg-apple-bg rounded-2xl flex items-center justify-center text-2xl shadow-inner group-hover:bg-ejn-gold/10 apple-transition">{m.icon}</div>
-                {/* Mock status logic for demo purposes */}
                 <div className="text-right">
                   <span className={`text-[10px] font-black px-2 py-1 rounded-md uppercase bg-apple-bg text-apple-tertiary`}>
                     PENDENTE
@@ -244,7 +249,6 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
         )}
       </div>
 
-      {/* Footer Motivacional */}
       <div className="bg-ejn-gold/5 rounded-3xl p-8 text-center border border-dashed border-ejn-gold/30">
         <p className="text-xs font-bold text-ejn-medium uppercase tracking-widest max-w-xs mx-auto leading-relaxed">
           Novos desafios e brindes são adicionados toda segunda-feira às <span className="text-ejn-dark">09:00h</span>.

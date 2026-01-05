@@ -57,6 +57,8 @@ const App: React.FC = () => {
           if (mounted) {
               setCurrentUser(cachedUser);
               setLoading(false); 
+              // Pre-fetch inicial para "aquecer" os componentes
+              preFetchData();
           }
       }
 
@@ -65,6 +67,7 @@ const App: React.FC = () => {
           if (mounted) {
              if (freshUser) {
                  setCurrentUser(freshUser);
+                 preFetchData(); // Refresh silencioso
              } else if (!cachedUser) {
                  setCurrentUser(null);
              }
@@ -89,6 +92,7 @@ const App: React.FC = () => {
          if (mounted && user) {
              setCurrentUser(user);
              setLoading(false);
+             preFetchData();
          }
       }
     });
@@ -99,12 +103,20 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Otimização: Busca dados em background para popular o localStorage/Cache
+  const preFetchData = () => {
+    storage.getUsers().catch(() => {});
+    storage.getMissions().catch(() => {});
+    storage.getRewards().catch(() => {});
+  };
+
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     setLoadingError(false);
     setCurrentView('FEED');
     localStorage.setItem('ejn_last_view', 'FEED');
     setLoading(false);
+    preFetchData();
   };
 
   const handleLogout = async () => {

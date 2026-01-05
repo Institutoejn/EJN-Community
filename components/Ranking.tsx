@@ -4,29 +4,39 @@ import { User } from '../types';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
 
+// Cache em memória para persistência durante a sessão (transições rápidas)
+let rankingCache: any[] | null = null;
+
 interface RankingProps {
   user: User;
   onFollow?: (id: string) => void;
 }
 
 const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [leaderboard, setLeaderboard] = useState<any[]>(rankingCache || []);
+  const [loading, setLoading] = useState(!rankingCache);
 
   useEffect(() => {
     const fetchUsers = async () => {
-      setLoading(true);
-      const allUsers = await storage.getUsers();
+      // Se já temos cache, fazemos o fetch em background (SWR pattern)
+      if (!rankingCache) setLoading(true);
       
-      const ranked = allUsers
-        .sort((a, b) => b.pontosTotais - a.pontosTotais)
-        .map(u => ({
-          ...u,
-          isCurrent: u.id === user.id
-        }));
-      
-      setLeaderboard(ranked);
-      setLoading(false);
+      try {
+        const allUsers = await storage.getUsers();
+        const ranked = allUsers
+          .sort((a, b) => b.pontosTotais - a.pontosTotais)
+          .map(u => ({
+            ...u,
+            isCurrent: u.id === user.id
+          }));
+        
+        rankingCache = ranked;
+        setLeaderboard(ranked);
+      } catch (error) {
+        console.error("Erro ao carregar ranking:", error);
+      } finally {
+        setLoading(false);
+      }
     };
     fetchUsers();
   }, [user.id]);
@@ -37,7 +47,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
     if (onFollow) onFollow(targetId);
   };
 
-  if (loading) {
+  if (loading && !leaderboard.length) {
      return (
         <div className="w-full h-64 flex items-center justify-center">
            <div className="w-8 h-8 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
@@ -59,9 +69,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
         </div>
       </div>
 
-      {/* Podium: Stack vertical no mobile, horizontal no desktop */}
       <div className="flex flex-col md:flex-row items-center md:items-end justify-center gap-6 md:gap-6 pt-6 md:pt-10 px-2">
-        {/* 2nd Place (Desktop: Left, Mobile: Second) */}
         {top3[1] && (
           <div className="flex flex-col items-center w-full max-w-[160px] md:flex-1 md:max-w-[120px] order-2 md:order-1">
             <div className="relative mb-4">
@@ -76,7 +84,6 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
           </div>
         )}
 
-        {/* 1st Place (Desktop: Center, Mobile: First) */}
         {top3[0] && (
           <div className="flex flex-col items-center w-full max-w-[180px] md:flex-1 md:max-w-[140px] order-1 md:order-2 md:-translate-y-4">
             <div className="relative mb-4">
@@ -91,7 +98,6 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
           </div>
         )}
 
-        {/* 3rd Place (Desktop: Right, Mobile: Third) */}
         {top3[2] && (
           <div className="flex flex-col items-center w-full max-w-[160px] md:flex-1 md:max-w-[120px] order-3">
             <div className="relative mb-4">
