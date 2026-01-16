@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthView, User } from '../types';
 import { storage } from '../services/storage';
 import { AVATAR_COLORS } from '../constants';
@@ -11,10 +11,22 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
   const [view, setView] = useState<AuthView>(AuthView.LOGIN);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [missingConfig, setMissingConfig] = useState(false);
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Verifica as chaves ao montar o componente
+  useEffect(() => {
+    const env = (import.meta as any).env;
+    const url = env.VITE_SUPABASE_URL;
+    const key = env.VITE_SUPABASE_ANON_KEY;
+
+    if (!url || !key || url.includes('seu-projeto') || url.includes('placeholder')) {
+      setMissingConfig(true);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,7 +81,8 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
         const { error } = await storage.signIn(email, password);
         if (error) {
              if (error.message.includes("Failed to fetch")) {
-                 throw new Error("Erro de Conexão: Verifique se o arquivo .env.local tem a URL e Chave corretas do Supabase.");
+                 setMissingConfig(true); // Ativa a tela de ajuda se falhar conexão
+                 throw new Error("Falha na conexão. Verifique suas credenciais.");
              }
              throw new Error('E-mail ou senha incorretos.');
         }
@@ -98,12 +111,44 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
       const msg = err.message || 'Ocorreu um erro inesperado.';
       // Traduz erros comuns do Supabase
       if (msg.includes('Invalid login credentials')) setError('E-mail ou senha incorretos.');
-      else if (msg.includes('Failed to fetch')) setError('Erro de conexão com o banco de dados. Verifique as chaves no .env.local');
+      else if (msg.includes('Failed to fetch')) setError('Erro de conexão com o banco de dados.');
       else setError(msg);
     } finally {
       setLoading(false);
     }
   };
+
+  if (missingConfig) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-apple-bg font-sans">
+        <div className="w-full max-w-lg bg-white rounded-[32px] p-10 apple-shadow border-l-8 border-ejn-gold animate-fadeIn">
+          <h2 className="text-2xl font-black text-ejn-dark mb-4">Configuração Necessária ⚠️</h2>
+          <p className="text-apple-text text-sm mb-6 leading-relaxed">
+            O aplicativo não conseguiu conectar ao Supabase. Isso acontece porque o arquivo <code className="bg-gray-100 px-2 py-1 rounded text-red-500 font-mono">.env.local</code> ainda contém os valores de exemplo.
+          </p>
+          
+          <div className="bg-apple-bg rounded-2xl p-6 mb-8 space-y-4">
+            <h3 className="font-bold text-sm uppercase tracking-widest text-apple-secondary">Como resolver:</h3>
+            <ol className="list-decimal list-inside text-sm space-y-3 font-medium text-apple-text">
+              <li>Crie um projeto em <a href="https://supabase.com" target="_blank" className="text-ejn-medium underline hover:text-ejn-dark">supabase.com</a></li>
+              <li>Vá em <strong>Project Settings &gt; API</strong></li>
+              <li>Copie a <strong>URL</strong> e a <strong>anon key</strong></li>
+              <li>Abra o arquivo <code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">.env.local</code> no seu editor</li>
+              <li>Substitua os valores de exemplo pelos reais</li>
+              <li>Reinicie o servidor (<code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">Ctrl+C</code> e <code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">npm run dev</code>)</li>
+            </ol>
+          </div>
+
+          <button 
+            onClick={() => window.location.reload()}
+            className="w-full py-4 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium apple-transition"
+          >
+            Já configurei, recarregar página
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-apple-bg font-sans overflow-hidden">
