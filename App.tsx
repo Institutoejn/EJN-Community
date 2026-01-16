@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, Suspense, lazy } from 'react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
@@ -66,6 +65,10 @@ const App: React.FC = () => {
           const freshUser = await storage.getCurrentUser(false); 
           if (mounted) {
              if (freshUser) {
+                 if (freshUser.status === 'suspended') {
+                    handleLogout(); // Logout imediato se suspenso
+                    return;
+                 }
                  setCurrentUser(freshUser);
                  preFetchData(); // Refresh silencioso
              } else if (!cachedUser) {
@@ -90,6 +93,11 @@ const App: React.FC = () => {
       } else if (event === 'SIGNED_IN' && session) {
          const user = await storage.getCurrentUser();
          if (mounted && user) {
+             if (user.status === 'suspended') {
+                alert('Sua conta foi suspensa pela administração.');
+                await storage.signOut();
+                return;
+             }
              setCurrentUser(user);
              setLoading(false);
              preFetchData();
@@ -102,6 +110,34 @@ const App: React.FC = () => {
       subscription.unsubscribe();
     };
   }, []);
+
+  // --- REAL-TIME SECURITY LISTENER ---
+  // Monitora se o usuário foi suspenso enquanto usa o app
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const channel = supabase.channel(`security-${currentUser.id}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'users',
+        filter: `id=eq.${currentUser.id}`
+      }, (payload) => {
+        const newUser = payload.new as any;
+        if (newUser.status === 'suspended') {
+           alert("Sessão encerrada: Sua conta foi suspensa por um administrador.");
+           handleLogout();
+        } else if (newUser.role !== currentUser.role) {
+           // Atualiza role em tempo real (ex: virou gestor)
+           setCurrentUser(prev => prev ? { ...prev, role: newUser.role } : null);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id]);
 
   // Otimização: Busca dados em background para popular o localStorage/Cache
   const preFetchData = () => {

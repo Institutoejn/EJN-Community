@@ -111,6 +111,21 @@ alter table public.settings enable row level security;
 insert into public.settings (id) values (1) on conflict do nothing;
 
 -- =========================================================
+-- FUNÇÃO AUXILIAR: VERIFICAR SE É ADMIN
+-- =========================================================
+-- Esta função permite que as políticas verifiquem se o usuário é gestor
+-- sem causar recursão infinita ou problemas de permissão.
+create or replace function public.is_admin()
+returns boolean as $$
+begin
+  return exists (
+    select 1 from public.users
+    where id = auth.uid() and role = 'gestor'
+  );
+end;
+$$ language plpgsql security definer;
+
+-- =========================================================
 -- ROW LEVEL SECURITY (RLS) - POLÍTICAS DE SEGURANÇA
 -- =========================================================
 
@@ -119,10 +134,13 @@ drop policy if exists "Perfis são públicos" on public.users;
 create policy "Perfis são públicos" on public.users for select using (true);
 
 drop policy if exists "Usuário edita próprio perfil" on public.users;
-create policy "Usuário edita próprio perfil" on public.users for update using (auth.uid() = id);
+create policy "Usuário edita próprio perfil" on public.users for update using (auth.uid() = id OR public.is_admin());
 
 drop policy if exists "Usuário insere próprio perfil" on public.users;
 create policy "Usuário insere próprio perfil" on public.users for insert with check (auth.uid() = id);
+
+drop policy if exists "Admin deleta usuarios" on public.users;
+create policy "Admin deleta usuarios" on public.users for delete using (public.is_admin());
 
 -- POSTS
 drop policy if exists "Posts são públicos" on public.posts;
@@ -131,11 +149,11 @@ create policy "Posts são públicos" on public.posts for select using (true);
 drop policy if exists "Usuários autenticados postam" on public.posts;
 create policy "Usuários autenticados postam" on public.posts for insert with check (auth.role() = 'authenticated');
 
-drop policy if exists "Dono edita post" on public.posts;
-create policy "Dono edita post" on public.posts for update using (auth.uid() = user_id);
+drop policy if exists "Dono ou Admin edita post" on public.posts;
+create policy "Dono ou Admin edita post" on public.posts for update using (auth.uid() = user_id OR public.is_admin());
 
-drop policy if exists "Dono deleta post" on public.posts;
-create policy "Dono deleta post" on public.posts for delete using (auth.uid() = user_id);
+drop policy if exists "Dono ou Admin deleta post" on public.posts;
+create policy "Dono ou Admin deleta post" on public.posts for delete using (auth.uid() = user_id OR public.is_admin());
 
 -- COMMENTS
 drop policy if exists "Comentários públicos" on public.comments;
@@ -143,6 +161,9 @@ create policy "Comentários públicos" on public.comments for select using (true
 
 drop policy if exists "Autenticados comentam" on public.comments;
 create policy "Autenticados comentam" on public.comments for insert with check (auth.role() = 'authenticated');
+
+drop policy if exists "Dono ou Admin deleta comentario" on public.comments;
+create policy "Dono ou Admin deleta comentario" on public.comments for delete using (auth.uid() = user_id OR public.is_admin());
 
 -- LIKES
 drop policy if exists "Likes públicos" on public.likes;
