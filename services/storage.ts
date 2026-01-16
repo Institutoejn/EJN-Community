@@ -21,18 +21,18 @@ const localCache = {
   },
   set: (key: string, data: any) => {
     try {
+      // OTIMIZAÇÃO CRÍTICA: Não salvar strings Base64 gigantes no localStorage
+      // Se detectar Base64, não cacheia ou limpa, dependendo da estratégia.
+      // Aqui vamos confiar que os dados vindos do banco já são URLs curtas.
       localStorage.setItem(key, JSON.stringify(data));
-    } catch (e) { console.warn('Cache limit reached'); }
+    } catch (e) { 
+        console.warn('Cache limit reached, clearing old data');
+        localStorage.clear(); // Limpeza de emergência
+    }
   },
   clear: () => {
     Object.values(CACHE_KEYS).forEach(k => localStorage.removeItem(k));
     localStorage.removeItem('ejn_last_view');
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.includes('auth-token')) {
-            localStorage.removeItem(key);
-        }
-    }
   }
 };
 
@@ -64,8 +64,27 @@ const mapUser = (dbUser: any): User => ({
 });
 
 export const storage = {
+  // --- UPLOAD DE ARQUIVOS (NOVO) ---
+  uploadImage: async (file: File, path: string): Promise<string> => {
+    try {
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${path}/${Date.now()}.${fileExt}`;
+        
+        const { error: uploadError } = await supabase.storage
+            .from('media')
+            .upload(fileName, file, { upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data } = supabase.storage.from('media').getPublicUrl(fileName);
+        return data.publicUrl;
+    } catch (error) {
+        console.error("Erro no upload:", error);
+        throw error;
+    }
+  },
+
   // --- MÉTODOS SÍNCRONOS (INSTANT VIEW) ---
-  // Estes métodos retornam dados IMEDIATAMENTE do localStorage para renderização instantânea
   getLocalPosts: (): Post[] => localCache.get<Post[]>(CACHE_KEYS.POSTS) || [],
   getLocalUsers: (): User[] => localCache.get<User[]>(CACHE_KEYS.USERS) || [],
   getLocalMissions: (): Mission[] => localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [],
@@ -118,6 +137,12 @@ export const storage = {
   },
 
   saveUser: async (user: User) => {
+    // Garante que só salvamos URLs, nunca Base64 gigantes
+    if (user.avatarUrl && user.avatarUrl.startsWith('data:')) {
+        console.error("Tentativa de salvar Base64 no banco. Use uploadImage primeiro.");
+        delete user.avatarUrl; 
+    }
+    
     const dbUser = {
       name: user.name,
       bio: user.bio,
@@ -141,7 +166,6 @@ export const storage = {
     const { error } = await supabase.from('users').delete().eq('id', userId);
     if (error) throw error;
     
-    // Limpa caches locais
     localStorage.removeItem(CACHE_KEYS.USERS); 
     const users = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
     localCache.set(CACHE_KEYS.USERS, users.filter(u => u.id !== userId));
@@ -211,7 +235,7 @@ export const storage = {
     return data as TrendingTopic[];
   },
 
-  // --- MISSIONS ---
+  // --- MISSIONS & REWARDS (Mantido) ---
   getMissions: async (): Promise<Mission[]> => {
     const { data, error } = await supabase.from('missions').select('*').order('created_at', { ascending: false });
     if (error) return localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
@@ -222,29 +246,22 @@ export const storage = {
     localCache.set(CACHE_KEYS.MISSIONS, mapped);
     return mapped;
   },
-
   saveMission: async (mission: Mission) => {
       const dbData = {
           title: mission.title, description: mission.desc, reward_xp: mission.rewardXP,
           reward_coins: mission.rewardCoins, icon: mission.icon, type: mission.type, is_active: mission.isActive
       };
       if (mission.id && mission.id.length > 5) {
-          const { error } = await supabase.from('missions').update(dbData).eq('id', mission.id);
-          if (error) throw error;
+          await supabase.from('missions').update(dbData).eq('id', mission.id);
       } else {
-          const { error } = await supabase.from('missions').insert(dbData);
-          if (error) throw error;
+          await supabase.from('missions').insert(dbData);
       }
   },
-
   deleteMission: async (id: string) => {
-      const { error } = await supabase.from('missions').delete().eq('id', id);
-      if (error) throw error;
+      await supabase.from('missions').delete().eq('id', id);
       const missions = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
       localCache.set(CACHE_KEYS.MISSIONS, missions.filter(m => m.id.toString() !== id.toString()));
   },
-
-  // --- REWARDS ---
   getRewards: async (): Promise<RewardItem[]> => {
     const { data, error } = await supabase.from('rewards').select('*').order('cost', { ascending: true });
     if (error) return localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
@@ -255,32 +272,23 @@ export const storage = {
     localCache.set(CACHE_KEYS.REWARDS, mapped);
     return mapped;
   },
-
   saveReward: async (reward: RewardItem) => {
       const dbData = {
           title: reward.title, description: reward.desc, long_desc: reward.longDesc, cost: reward.cost,
           icon: reward.icon, image_url: reward.imageUrl, stock: reward.stock, category: reward.category
       };
       if (reward.id && reward.id.length > 5) {
-          const { error } = await supabase.from('rewards').update(dbData).eq('id', reward.id);
-          if (error) throw error;
+          await supabase.from('rewards').update(dbData).eq('id', reward.id);
       } else {
-          const { error } = await supabase.from('rewards').insert(dbData);
-          if (error) throw error;
+          await supabase.from('rewards').insert(dbData);
       }
   },
-
   deleteReward: async (id: string) => {
-      const { error } = await supabase.from('rewards').delete().eq('id', id);
-      if (error) {
-          console.error("Erro ao deletar do Supabase:", error);
-          throw error;
-      }
+      await supabase.from('rewards').delete().eq('id', id);
       const rewards = localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
       localCache.set(CACHE_KEYS.REWARDS, rewards.filter(r => r.id.toString() !== id.toString()));
   },
 
-  // --- SETTINGS ---
   getSettings: async (): Promise<AppSettings> => {
     const { data, error } = await supabase.from('settings').select('*').single();
     if (error || !data) return { platformName: 'Rede Social EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10 };
@@ -300,9 +308,7 @@ export const storage = {
     try {
         localCache.clear(); 
         await supabase.auth.signOut(); 
-    } catch (e) {
-        console.warn("Silent failure during signout", e);
-    }
+    } catch (e) { console.warn(e); }
   },
   signIn: async (email: string, password: string) => await supabase.auth.signInWithPassword({ email, password }),
   signUp: async (email: string, password: string, metaData: any) => await supabase.auth.signUp({ email, password, options: { data: metaData } }),

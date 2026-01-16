@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import { User } from '../types';
 import Avatar from './Avatar';
@@ -15,76 +14,81 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
   const [editedUser, setEditedUser] = useState<User>({ ...user });
   const [message, setMessage] = useState('');
   const [processingImage, setProcessingImage] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<{avatar?: File, cover?: File}>({});
+  const [previewUrls, setPreviewUrls] = useState<{avatar?: string, cover?: string}>({});
   
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
   const xpPercentage = (user.xp / user.xpProximoNivel) * 100;
 
-  // Função utilitária para comprimir imagens (Otimizada para Velocidade)
-  const processImage = (file: File, maxWidth: number): Promise<string> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-
-          canvas.width = width;
-          canvas.height = height;
-          
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          
-          // JPEG com qualidade 0.6 (reduz tamanho em ~80% e acelera upload)
-          resolve(canvas.toDataURL('image/jpeg', 0.6));
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'cover') => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'cover') => {
     const file = e.target.files?.[0];
     if (file) {
-      setProcessingImage(true);
-      try {
-        // Avatar max 250px (suficiente para mobile), Capa max 800px
-        const maxWidth = type === 'avatar' ? 250 : 800;
-        const compressedBase64 = await processImage(file, maxWidth);
-        
-        if (type === 'avatar') {
-          setEditedUser({ ...editedUser, avatarUrl: compressedBase64 });
-        } else {
-          setEditedUser({ ...editedUser, coverUrl: compressedBase64 });
-        }
-      } catch (error) {
-        console.error("Erro ao processar imagem", error);
-        alert("Erro ao processar a imagem. Tente uma menor.");
-      } finally {
-        setProcessingImage(false);
+      // Cria URL local apenas para preview rápido
+      const localUrl = URL.createObjectURL(file);
+      
+      setPendingFiles(prev => ({ ...prev, [type]: file }));
+      setPreviewUrls(prev => ({ ...prev, [type]: localUrl }));
+      
+      // Atualiza visualmente o editedUser
+      if (type === 'avatar') {
+          setEditedUser(prev => ({ ...prev, avatarUrl: localUrl }));
+      } else {
+          setEditedUser(prev => ({ ...prev, coverUrl: localUrl }));
       }
     }
   };
 
   const handleSave = async () => {
-    // Atualização otimista na UI
-    onUpdateUser(editedUser);
-    setIsEditing(false);
-    setMessage('Perfil atualizado com sucesso');
-    
-    // Persistência em background
-    await storage.saveUser(editedUser);
-    
-    setTimeout(() => setMessage(''), 3000);
+    setProcessingImage(true);
+    setMessage('Salvando alterações...');
+
+    try {
+        let finalAvatarUrl = user.avatarUrl;
+        let finalCoverUrl = user.coverUrl;
+
+        // 1. Faz Upload dos Arquivos Reais para o Supabase Storage
+        if (pendingFiles.avatar) {
+            finalAvatarUrl = await storage.uploadImage(pendingFiles.avatar, 'avatars');
+        }
+        if (pendingFiles.cover) {
+            finalCoverUrl = await storage.uploadImage(pendingFiles.cover, 'covers');
+        }
+
+        // 2. Prepara objeto final (sem URLs de blob locais)
+        const userToSave: User = {
+            ...editedUser,
+            avatarUrl: finalAvatarUrl,
+            coverUrl: finalCoverUrl
+        };
+
+        // 3. Salva no Banco de Dados
+        await storage.saveUser(userToSave);
+
+        // 4. Atualiza estado global
+        onUpdateUser(userToSave);
+        setIsEditing(false);
+        setMessage('Perfil atualizado com sucesso!');
+        
+        // Limpa estados temporários
+        setPendingFiles({});
+        setPreviewUrls({});
+
+    } catch (error) {
+        console.error("Erro ao salvar perfil:", error);
+        setMessage('Erro ao salvar. Tente novamente.');
+    } finally {
+        setProcessingImage(false);
+        setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const handleCancel = () => {
+      setIsEditing(false);
+      setEditedUser({ ...user });
+      setPendingFiles({});
+      setPreviewUrls({});
   };
 
   return (
@@ -95,21 +99,21 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
         ref={avatarInputRef} 
         className="hidden" 
         accept="image/*" 
-        onChange={(e) => handleFileChange(e, 'avatar')} 
+        onChange={(e) => handleFileSelect(e, 'avatar')} 
       />
       <input 
         type="file" 
         ref={coverInputRef} 
         className="hidden" 
         accept="image/*" 
-        onChange={(e) => handleFileChange(e, 'cover')} 
+        onChange={(e) => handleFileSelect(e, 'cover')} 
       />
 
       {/* Profile Header */}
       <div className="bg-white rounded-3xl apple-shadow overflow-hidden">
         <div className="h-32 md:h-48 bg-ejn-dark relative group">
           {editedUser.coverUrl ? (
-            <img src={isEditing ? editedUser.coverUrl : user.coverUrl} className="w-full h-full object-cover" alt="Capa" />
+            <img src={editedUser.coverUrl} className="w-full h-full object-cover" alt="Capa" />
           ) : (
             <div className="absolute inset-0 bg-gradient-to-br from-ejn-dark to-ejn-medium opacity-50"></div>
           )}
@@ -120,7 +124,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                   onClick={() => !processingImage && coverInputRef.current?.click()}
                   className="bg-white/90 text-apple-text px-4 py-2 rounded-full text-xs font-bold apple-transition hover:scale-105 flex items-center gap-2"
                 >
-                  <Icons.Plus className="w-4 h-4" /> {processingImage ? 'Processando...' : 'Alterar Capa'}
+                  <Icons.Plus className="w-4 h-4" /> Alterar Capa
                 </button>
              </div>
           )}
@@ -132,7 +136,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
               <Avatar 
                 name={user.name} 
                 bgColor={editedUser.avatarCor} 
-                url={isEditing ? editedUser.avatarUrl : user.avatarUrl} 
+                url={editedUser.avatarUrl} 
                 size="xl" 
                 className="ring-4 md:ring-8 ring-white" 
               />
@@ -144,13 +148,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                       onClick={() => !processingImage && avatarInputRef.current?.click()}
                       className="bg-white text-apple-text px-3 py-1.5 rounded-full text-[10px] font-bold apple-transition hover:scale-105"
                     >
-                      {processingImage ? '...' : 'Alterar Foto'}
-                    </button>
-                    <button 
-                      onClick={() => setEditedUser({...editedUser, avatarCor: AVATAR_COLORS[Math.floor(Math.random()*AVATAR_COLORS.length)], avatarUrl: undefined})}
-                      className="bg-white/20 text-white px-3 py-1.5 rounded-full text-[10px] font-bold apple-transition hover:bg-white/40"
-                    >
-                      Remover
+                      Alterar Foto
                     </button>
                   </div>
                 </div>
@@ -167,10 +165,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
             ) : (
               <div className="flex gap-2">
                 <button 
-                  onClick={() => {
-                    setIsEditing(false);
-                    setEditedUser({...user});
-                  }}
+                  onClick={handleCancel}
                   className="bg-apple-bg text-apple-secondary px-5 md:px-6 py-2 md:py-2.5 rounded-full font-bold text-sm hover:text-apple-text apple-transition"
                 >
                   Cancelar
@@ -180,15 +175,15 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                   disabled={processingImage}
                   className="bg-ejn-gold text-ejn-dark px-7 md:px-8 py-2 md:py-2.5 rounded-full font-bold text-sm shadow-md hover:scale-105 active:scale-95 apple-transition disabled:opacity-50"
                 >
-                  {processingImage ? 'Aguarde...' : 'Salvar'}
+                  {processingImage ? 'Enviando...' : 'Salvar'}
                 </button>
               </div>
             )}
           </div>
 
           {message && (
-            <div className="fixed top-20 right-4 md:right-8 bg-apple-text text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-2xl animate-slideIn flex items-center gap-2 z-[60]">
-               <div className="w-4 h-4 bg-green-500 rounded-full"></div> {message}
+            <div className={`fixed top-20 right-4 md:right-8 px-6 py-3 rounded-2xl text-sm font-bold shadow-2xl animate-slideIn flex items-center gap-2 z-[60] ${message.includes('Erro') ? 'bg-red-500 text-white' : 'bg-ejn-dark text-white'}`}>
+               <div className={`w-4 h-4 rounded-full ${message.includes('Erro') ? 'bg-red-800' : 'bg-green-500'}`}></div> {message}
             </div>
           )}
 
@@ -319,29 +314,6 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
               <h3 className="text-xl md:text-3xl font-black text-apple-text">🔥 {user.streak}</h3>
               <p className="text-[8px] md:text-[10px] font-bold text-apple-secondary uppercase">Dias</p>
            </div>
-        </div>
-      </div>
-
-      {/* Badges Section */}
-      <div className="bg-white rounded-3xl p-6 md:p-8 apple-shadow">
-        <h3 className="text-lg md:text-xl font-bold text-apple-text mb-6 md:mb-8">Badges Conquistadas</h3>
-        <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-4 md:gap-8">
-            {user.badges.map((b, i) => (
-                <div key={i} className="flex flex-col items-center gap-2 md:gap-3 group">
-                    <div className="w-12 h-12 md:w-16 md:h-16 bg-apple-bg rounded-2xl flex items-center justify-center shadow-inner border border-apple-border group-hover:scale-110 group-hover:bg-ejn-gold/10 apple-transition cursor-pointer">
-                        <span className="text-2xl md:text-3xl">🏆</span>
-                    </div>
-                    <span className="text-[8px] md:text-[9px] font-bold text-apple-secondary text-center uppercase leading-tight tracking-wider">{b}</span>
-                </div>
-            ))}
-            {[...Array(4)].map((_, i) => (
-                <div key={i} className="flex flex-col items-center gap-2 md:gap-3 opacity-20 grayscale">
-                    <div className="w-12 h-12 md:w-16 md:h-16 bg-apple-bg rounded-2xl flex items-center justify-center border-2 border-dashed border-apple-border">
-                        <Icons.Award className="w-6 h-6 md:w-8 md:h-8 text-apple-tertiary" />
-                    </div>
-                    <span className="text-[8px] md:text-[9px] font-bold text-apple-tertiary text-center uppercase tracking-wider">Bloqueado</span>
-                </div>
-            ))}
         </div>
       </div>
     </div>

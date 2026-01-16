@@ -14,11 +14,11 @@ interface FeedProps {
 const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   // Inicialização INSTANTÂNEA com dados do cache local
   const [posts, setPosts] = useState<Post[]>(() => storage.getLocalPosts());
-  // Se tiver cache, loading é falso imediatamente
   const [loadingPosts, setLoadingPosts] = useState(() => storage.getLocalPosts().length === 0);
   
   const [newPost, setNewPost] = useState('');
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [showXpGain, setShowXpGain] = useState(false);
   const [xpAmount, setXpAmount] = useState(50);
   
@@ -49,10 +49,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   // --- REALTIME SUBSCRIPTION ---
   useEffect(() => {
-    // Busca dados frescos em background, sem bloquear a UI (SWR)
     fetchPosts(true);
 
-    // Canal de Websocket para ouvir mudanças no banco em Tempo Real
     const channel = supabase.channel('feed-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
          if (payload.eventType === 'UPDATE') {
@@ -83,7 +81,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const fetchPosts = async (force = false) => {
       try {
         const savedPosts = await storage.getPosts(force);
-        // Só atualiza se houver mudança real ou se estiver vazio
         if (savedPosts.length > 0) {
             setPosts(savedPosts);
         }
@@ -107,93 +104,82 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
       });
   };
 
-  const processImage = (file: File): Promise<string> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxWidth = 700;
-          let width = img.width;
-          let height = img.height;
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.6));
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setProcessingImage(true);
-      try {
-        const compressed = await processImage(file);
-        setSelectedImage(compressed);
-      } catch (err) {
-        console.error("Erro ao processar imagem do post");
-      } finally {
-        setProcessingImage(false);
-      }
+      // Apenas preview local
+      setSelectedImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
     }
   };
 
   const handlePostSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!newPost.trim() && !selectedImage) || processingImage) return;
+    if ((!newPost.trim() && !selectedImageFile) || processingImage) return;
 
-    const tempId = 'temp-' + Date.now();
-    const optimisticPost: Post = {
-        id: tempId,
-        userId: user.id,
-        userName: user.name,
-        avatarUrl: user.avatarUrl,
-        avatarCor: user.avatarCor,
-        content: newPost,
-        imageUrl: selectedImage || undefined,
-        comments: [], 
-        likes: 0,
-        timestamp: new Date().toISOString(),
-        likedByMe: false
-    };
+    setProcessingImage(true);
 
-    setPosts([optimisticPost, ...posts]);
-    setNewPost('');
-    setSelectedImage(null);
+    try {
+        let uploadedImageUrl;
+        if (selectedImageFile) {
+            uploadedImageUrl = await storage.uploadImage(selectedImageFile, 'posts');
+        }
 
-    await storage.savePost({
-        userId: user.id,
-        userName: user.name,
-        content: optimisticPost.content,
-        imageUrl: optimisticPost.imageUrl,
-        comments: [], 
-        likes: 0,
-        timestamp: optimisticPost.timestamp,
-        id: '' 
-    });
+        const optimisticPost: Post = {
+            id: 'temp-' + Date.now(),
+            userId: user.id,
+            userName: user.name,
+            avatarUrl: user.avatarUrl,
+            avatarCor: user.avatarCor,
+            content: newPost,
+            imageUrl: uploadedImageUrl || (imagePreview || undefined), // Usa URL real se tiver, senão preview
+            comments: [], 
+            likes: 0,
+            timestamp: new Date().toISOString(),
+            likedByMe: false
+        };
 
-    const bonus = selectedImage ? 75 : 50;
-    setXpAmount(bonus);
-    setShowXpGain(true);
-    
-    const updatedUser = { ...user, xp: user.xp + bonus, postsCount: (user.postsCount || 0) + 1 };
-    onUpdateUser(updatedUser);
-    storage.saveUser(updatedUser);
+        // Atualização Otimista
+        setPosts([optimisticPost, ...posts]);
+        
+        // Limpeza do Form
+        setNewPost('');
+        setSelectedImageFile(null);
+        setImagePreview(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
 
-    setTimeout(() => {
-        setShowXpGain(false);
-        fetchPosts(true); 
-    }, 2000);
+        // Salvar no Banco
+        await storage.savePost({
+            userId: user.id,
+            userName: user.name,
+            content: optimisticPost.content,
+            imageUrl: uploadedImageUrl,
+            comments: [], 
+            likes: 0,
+            timestamp: optimisticPost.timestamp,
+            id: '' 
+        });
+
+        // Feedback de XP
+        const bonus = uploadedImageUrl ? 75 : 50;
+        setXpAmount(bonus);
+        setShowXpGain(true);
+        
+        const updatedUser = { ...user, xp: user.xp + bonus, postsCount: (user.postsCount || 0) + 1 };
+        onUpdateUser(updatedUser);
+        storage.saveUser(updatedUser);
+
+        setTimeout(() => {
+            setShowXpGain(false);
+            fetchPosts(true); // Garante sincronia
+        }, 2000);
+
+    } catch (error) {
+        console.error("Erro ao publicar:", error);
+        alert("Erro ao publicar. Tente novamente.");
+    } finally {
+        setProcessingImage(false);
+    }
   };
 
   const handleEditClick = (post: Post) => {
@@ -281,7 +267,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const removeSelectedImage = () => {
-    setSelectedImage(null);
+    setSelectedImageFile(null);
+    setImagePreview(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -304,10 +291,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
               onChange={(e) => setNewPost(e.target.value)}
             />
 
-            {selectedImage && (
+            {imagePreview && (
               <div className="mt-3 relative inline-block group">
                 <img 
-                  src={selectedImage} 
+                  src={imagePreview} 
                   alt="Preview" 
                   className="max-h-64 rounded-xl object-cover border border-apple-border shadow-sm"
                 />
@@ -344,10 +331,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
               </button>
               <button 
                 type="submit"
-                disabled={(!newPost.trim() && !selectedImage) || processingImage}
+                disabled={(!newPost.trim() && !selectedImageFile) || processingImage}
                 className="bg-ejn-gold text-ejn-dark px-8 py-2.5 rounded-full font-bold text-xs md:text-sm shadow-sm hover:scale-105 active:scale-95 disabled:opacity-40 disabled:scale-100 apple-transition uppercase tracking-widest"
               >
-                {processingImage ? 'Aguarde' : 'Publicar'}
+                {processingImage ? 'Enviando...' : 'Publicar'}
               </button>
             </div>
           </form>

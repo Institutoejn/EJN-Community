@@ -1,29 +1,36 @@
--- ... (MANTENHA TODO O CÓDIGO ANTERIOR IGUAL ATÉ O FIM DO ARQUIVO) ...
+-- ... (MANTENHA TODO O CÓDIGO ANTERIOR IGUAL) ...
 
 -- =========================================================
--- FUNÇÃO DE TRENDING TOPICS (HASHTAGS)
+-- CONFIGURAÇÃO DO STORAGE (BUCKETS)
 -- =========================================================
--- Esta função extrai palavras que começam com # de todos os posts,
--- conta a ocorrência de cada uma e retorna o top 5.
+-- Tenta criar o bucket 'media' se não existir.
+-- Nota: Em alguns ambientes Supabase, buckets devem ser criados via Dashboard.
+-- Este SQL garante as políticas de acesso.
 
-create or replace function public.get_trending_topics()
-returns table (tag text, count bigint)
-language plpgsql
-security definer
-as $$
-begin
-  return query
-  with extracted_tags as (
-    select lower((regexp_matches(content, '#([a-zA-Z0-9_]+)', 'g'))[1]) as tag
-    from public.posts
-    where content ~ '#[a-zA-Z0-9_]+' -- Apenas posts que contêm hashtags
-  )
-  select 
-    '#' || tag as tag,
-    count(*) as count
-  from extracted_tags
-  group by tag
-  order by count desc
-  limit 5;
-end;
-$$;
+insert into storage.buckets (id, name, public)
+values ('media', 'media', true)
+on conflict (id) do nothing;
+
+-- Política: Imagens são públicas para visualização
+drop policy if exists "Imagens são públicas" on storage.objects;
+create policy "Imagens são públicas"
+on storage.objects for select
+using ( bucket_id = 'media' );
+
+-- Política: Usuários autenticados podem fazer upload
+drop policy if exists "Usuários autenticados upload" on storage.objects;
+create policy "Usuários autenticados upload"
+on storage.objects for insert
+with check ( bucket_id = 'media' and auth.role() = 'authenticated' );
+
+-- Política: Usuários podem atualizar seus próprios arquivos (ou admin)
+drop policy if exists "Usuários atualizam arquivos" on storage.objects;
+create policy "Usuários atualizam arquivos"
+on storage.objects for update
+using ( bucket_id = 'media' and (auth.uid() = owner OR public.is_admin()) );
+
+-- Política: Usuários deletam seus arquivos (ou admin)
+drop policy if exists "Usuários deletam arquivos" on storage.objects;
+create policy "Usuários deletam arquivos"
+on storage.objects for delete
+using ( bucket_id = 'media' and (auth.uid() = owner OR public.is_admin()) );

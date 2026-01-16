@@ -1,7 +1,7 @@
-
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { User, AppView } from '../types';
 import Avatar from './Avatar';
+import { storage } from '../services/storage';
 
 interface SidebarProps {
   user: User;
@@ -11,13 +11,28 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) => {
-  const topUsers = [
-    { name: 'Ana Silva', points: 12500, avatar: 'bg-[#007AFF]' },
-    { name: 'Carlos Lima', points: 11200, avatar: 'bg-[#FF3B30]' },
-    { name: 'Beatriz Santos', points: 9800, avatar: 'bg-[#AF52DE]' },
-    { name: user.name, points: user.pontosTotais, avatar: user.avatarCor, avatarUrl: user.avatarUrl, isCurrent: true },
-    { name: 'Daniel Rocha', points: 8500, avatar: 'bg-[#FF9500]' },
-  ].sort((a, b) => b.points - a.points).slice(0, 5);
+  const [topUsers, setTopUsers] = useState<any[]>([]);
+
+  useEffect(() => {
+    // Busca dados REAIS do ranking lateral
+    const fetchRanking = async () => {
+        const users = await storage.getUsers();
+        // Ordena por pontos totais e pega top 5
+        const ranked = users
+            .sort((a, b) => b.pontosTotais - a.pontosTotais)
+            .slice(0, 5)
+            .map(u => ({
+                id: u.id,
+                name: u.name,
+                points: u.pontosTotais,
+                avatarCor: u.avatarCor,
+                avatarUrl: u.avatarUrl,
+                isCurrent: u.id === user.id
+            }));
+        setTopUsers(ranked);
+    };
+    fetchRanking();
+  }, [user.id]); // Recarrega se o ID do usuário mudar (login/logout)
 
   const handleNav = (view: AppView) => {
     setView(view);
@@ -26,7 +41,11 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
 
   const handleFollowClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (onFollow) onFollow('paulo_mentoria');
+    // Exemplo real: Seguir o primeiro do ranking se não for eu
+    const top1 = topUsers[0];
+    if (top1 && top1.id !== user.id && onFollow) {
+        onFollow(top1.id);
+    }
   };
 
   return (
@@ -53,24 +72,24 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
 
       <div className="bg-white rounded-2xl p-6 apple-shadow">
         <div className="flex items-center justify-between mb-5">
-          <h4 className="font-bold text-apple-text text-sm">Top 5 da Semana</h4>
-          <span className="text-[10px] font-black text-ejn-medium uppercase tracking-widest">Global</span>
+          <h4 className="font-bold text-apple-text text-sm">Top 5 Global</h4>
+          <span className="text-[10px] font-black text-ejn-medium uppercase tracking-widest">Tempo Real</span>
         </div>
         <div className="space-y-4">
-          {topUsers.map((u, i) => (
+          {topUsers.length > 0 ? topUsers.map((u, i) => (
             <div key={i} className={`flex items-center gap-3 ${u.isCurrent ? 'bg-ejn-gold/5 p-2 -mx-2 rounded-xl border border-ejn-gold/20' : ''}`}>
               <div className="text-[10px] font-bold text-apple-tertiary w-4">{i + 1}º</div>
               <div className="flex-1 min-w-0 flex items-center gap-2">
-                 <div className={`w-8 h-8 rounded-full ${u.avatar} flex items-center justify-center text-[10px] text-white font-bold shrink-0`}>
-                    {u.name[0]}
-                 </div>
+                 <Avatar name={u.name} bgColor={u.avatarCor} url={u.avatarUrl} size="xs" className="w-8 h-8 text-[10px]" />
                  <div className="min-w-0">
                     <p className="text-xs font-bold text-apple-text truncate">{u.name}</p>
                     <p className="text-[10px] text-apple-secondary font-medium">{u.points.toLocaleString()} pts</p>
                  </div>
               </div>
             </div>
-          ))}
+          )) : (
+              <div className="text-center py-4 text-xs text-apple-tertiary">Carregando ranking...</div>
+          )}
         </div>
         <button 
           onClick={() => handleNav('RANKING')}
@@ -78,24 +97,6 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         >
           Ver ranking completo
         </button>
-      </div>
-
-      <div className="lg:hidden bg-white rounded-2xl p-6 apple-shadow">
-          <h4 className="font-bold text-apple-text text-sm mb-4">Sugestão</h4>
-          <div className="flex items-center gap-3">
-             <div className="w-10 h-10 rounded-full bg-ejn-medium flex items-center justify-center text-white font-bold text-xs">PM</div>
-             <div>
-                <p className="text-xs font-bold text-apple-text">Paulo Mentoria</p>
-                <p className="text-[10px] text-apple-secondary">Especialista</p>
-             </div>
-             <button 
-                onClick={handleFollowClick}
-                disabled={user.followingIds?.includes('paulo_mentoria')}
-                className={`ml-auto font-bold text-xs ${user.followingIds?.includes('paulo_mentoria') ? 'text-apple-tertiary' : 'text-ejn-medium'}`}
-             >
-                {user.followingIds?.includes('paulo_mentoria') ? 'Seguindo' : 'Seguir'}
-             </button>
-          </div>
       </div>
 
       <div className="bg-ejn-dark rounded-2xl p-6 shadow-xl relative overflow-hidden">
