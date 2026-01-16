@@ -52,6 +52,19 @@ const App: React.FC = () => {
   useEffect(() => {
     let mounted = true;
 
+    // --- SAFETY TIMEOUT (Solução para o loop infinito) ---
+    // Se em 7 segundos o app não decidir se está logado ou não, forçamos o estado.
+    const safetyTimeout = setTimeout(() => {
+        if (mounted && loading) {
+            console.warn("⚠️ Carregamento demorou muito. Forçando liberação da UI.");
+            setLoading(false);
+            // Se não carregou usuário até agora, pode ser um token inválido travado
+            if (!currentUser) {
+                storage.signOut().catch(() => {});
+            }
+        }
+    }, 7000);
+
     const initApp = async () => {
       // 1. Tenta carga instantânea do cache
       const cachedUser = await storage.getCurrentUser(true);
@@ -68,7 +81,12 @@ const App: React.FC = () => {
 
       // 2. Verifica sessão real no servidor
       try {
-          const freshUser = await storage.getCurrentUser(false); 
+          // Timeout de 5s para a chamada de rede específica
+          const freshUserPromise = storage.getCurrentUser(false);
+          const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+          
+          const freshUser = await Promise.race([freshUserPromise, timeoutPromise]) as User | null;
+
           if (mounted) {
              if (freshUser) {
                  if (freshUser.status === 'suspended') {
@@ -78,12 +96,16 @@ const App: React.FC = () => {
                  setCurrentUser(freshUser);
                  preFetchData(); 
              } else if (!cachedUser) {
+                 // Se não tem cache e o freshUser veio nulo (ou timeout), assume deslogado
                  setCurrentUser(null);
              }
              setLoading(false);
           }
       } catch (err) {
-          if (!cachedUser && mounted) setLoading(false);
+          console.error("Erro na inicialização:", err);
+          if (!cachedUser && mounted) {
+             setLoading(false);
+          }
       }
     };
 
@@ -97,6 +119,7 @@ const App: React.FC = () => {
           setLoading(false);
         }
       } else if (event === 'SIGNED_IN' && session) {
+         // Não ativa loading aqui para evitar piscar a tela se já tivermos o user em cache
          const user = await storage.getCurrentUser();
          if (mounted && user) {
              if (user.status === 'suspended') {
@@ -108,12 +131,16 @@ const App: React.FC = () => {
              setLoading(false);
              preFetchData();
              warmUpViews();
+         } else if (mounted) {
+             // Caso raro: Logou no Auth mas falhou em pegar o perfil
+             setLoading(false);
          }
       }
     });
 
     return () => {
       mounted = false;
+      clearTimeout(safetyTimeout);
       subscription.unsubscribe();
     };
   }, []);
@@ -216,6 +243,12 @@ const App: React.FC = () => {
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
         <p className="text-xs font-bold text-apple-tertiary animate-pulse">Autenticando...</p>
+        <button 
+           onClick={() => setLoading(false)} 
+           className="mt-4 text-[10px] text-red-500 font-bold hover:underline"
+        >
+           Demorando muito? Cancelar
+        </button>
       </div>
     );
   }

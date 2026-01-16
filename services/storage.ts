@@ -99,13 +99,13 @@ export const storage = {
         if (sessionError || !session) return null;
 
         // 3. Busca Perfil Público
-        const { data: profile, error: profileError } = await supabase
+        let { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
             .eq('id', session.user.id)
-            .maybeSingle(); // maybeSingle evita erro 406 se não existir
+            .maybeSingle(); 
 
-        // --- SELF HEALING: Se perfil não existe mas Auth existe, cria agora ---
+        // --- SELF HEALING: Corrigir "Helena Alves" e outros usuários invisíveis ---
         if (!profile) {
             console.warn("Detectado usuário sem perfil público. Iniciando auto-reparo...");
             try {
@@ -119,30 +119,50 @@ export const storage = {
                     nivel: 1, xp: 0, pontos_totais: 0
                 };
                 
-                const { error: insertError } = await supabase.from('users').insert(newUser);
-                if (insertError) throw insertError;
+                // USA UPSERT: Se já existir (race condition), atualiza. Se não, cria.
+                // Isso evita erros 500 se o usuário foi criado parcialmente.
+                const { error: insertError } = await supabase.from('users').upsert(newUser);
                 
-                // Retorna o usuário recém-criado
-                return mapUser(newUser);
+                if (insertError) {
+                    console.error("Erro no upsert do auto-reparo:", insertError);
+                    // Tenta ler novamente, talvez tenha sido criado por trigger
+                    const retry = await supabase.from('users').select('*').eq('id', session.user.id).maybeSingle();
+                    if (retry.data) profile = retry.data;
+                    else throw insertError;
+                } else {
+                    // Sucesso na criação manual
+                    profile = newUser;
+                }
             } catch (healError) {
-                console.error("Falha no auto-reparo:", healError);
+                console.error("Falha crítica no auto-reparo:", healError);
                 return null;
             }
         }
 
+        if (!profile) return null; // Se ainda assim falhou
+
         const mappedUser = mapUser(profile);
 
-        // 4. Carrega dados sociais em paralelo (Performance)
+        // 4. Carrega dados sociais em paralelo (Com timeout para não travar loading)
         try {
-            const [followingResult, followersResult] = await Promise.all([
+            const socialPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
                 supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
             ]);
-            mappedUser.followingIds = followingResult.data ? followingResult.data.map((f: any) => f.following_id) : [];
-            mappedUser.followingCount = mappedUser.followingIds.length;
-            mappedUser.followersCount = followersResult.count || 0;
+            
+            // Timeout de 2s para dados sociais (não essenciais)
+            const timeoutSocial = new Promise<any>((resolve) => setTimeout(() => resolve(null), 2000));
+            
+            const results = await Promise.race([socialPromise, timeoutSocial]);
+
+            if (results) {
+                const [followingResult, followersResult] = results;
+                mappedUser.followingIds = followingResult.data ? followingResult.data.map((f: any) => f.following_id) : [];
+                mappedUser.followingCount = mappedUser.followingIds.length;
+                mappedUser.followersCount = followersResult.count || 0;
+            }
         } catch (e) {
-            console.warn("Erro ao carregar social stats", e);
+            console.warn("Erro ao carregar social stats (ignorando para não travar)", e);
         }
 
         localCache.set(CACHE_KEYS.USER, mappedUser);
@@ -157,6 +177,7 @@ export const storage = {
     const cached = localCache.get<User[]>(CACHE_KEYS.USERS);
     if (!forceRefresh && cached) return cached;
     
+    // Otimização: Não precisa selecionar badges ou arrays gigantescos para a lista
     const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false });
     if (error) return cached || [];
     

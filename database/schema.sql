@@ -1,8 +1,6 @@
 -- =========================================================
--- 1. LIMPEZA E ESTRUTURA (PREPARAÇÃO)
+-- 1. ESTRUTURA BASE (Garanta que tabelas existam)
 -- =========================================================
-
--- Recria tabelas apenas se necessário, mantendo dados
 create table if not exists public.users (
   id uuid references auth.users not null primary key,
   email text,
@@ -26,7 +24,7 @@ create table if not exists public.users (
   created_at timestamptz default now()
 );
 
--- Demais tabelas (garantindo existência)
+-- Demais tabelas
 create table if not exists public.posts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references public.users(id) on delete cascade not null,
@@ -89,9 +87,8 @@ create table if not exists public.settings (
 );
 
 -- =========================================================
--- 2. POLÍTICAS DE SEGURANÇA (RLS) - REFORÇADAS
+-- 2. POLÍTICAS DE SEGURANÇA (RLS)
 -- =========================================================
-
 alter table public.users enable row level security;
 alter table public.posts enable row level security;
 alter table public.comments enable row level security;
@@ -101,30 +98,33 @@ alter table public.missions enable row level security;
 alter table public.rewards enable row level security;
 alter table public.settings enable row level security;
 
--- Limpa policies antigas para evitar duplicidade/erros
+-- Users Policies
 drop policy if exists "Users - Leitura Pública" on public.users;
-drop policy if exists "Users - Update Próprio" on public.users;
-drop policy if exists "Users - Insert Próprio" on public.users;
-drop policy if exists "Users - Delete Admin" on public.users;
-
 create policy "Users - Leitura Pública" on public.users for select using (true);
+
+drop policy if exists "Users - Update Próprio" on public.users;
 create policy "Users - Update Próprio" on public.users for update using (auth.uid() = id);
--- Permite insert se o ID bater com o Auth (crucial para auto-healing)
+
+drop policy if exists "Users - Insert Próprio" on public.users;
 create policy "Users - Insert Próprio" on public.users for insert with check (auth.uid() = id);
+
+drop policy if exists "Users - Delete Admin" on public.users;
 create policy "Users - Delete Admin" on public.users for delete using (public.is_admin());
 
--- Reaplicando políticas essenciais de Posts
+-- Posts Policies
 drop policy if exists "Posts - Leitura Pública" on public.posts;
-drop policy if exists "Posts - Insert Autenticado" on public.posts;
-drop policy if exists "Posts - Update Próprio ou Admin" on public.posts;
-drop policy if exists "Posts - Delete Próprio ou Admin" on public.posts;
-
 create policy "Posts - Leitura Pública" on public.posts for select using (true);
+
+drop policy if exists "Posts - Insert Autenticado" on public.posts;
 create policy "Posts - Insert Autenticado" on public.posts for insert with check (auth.role() = 'authenticated');
+
+drop policy if exists "Posts - Update Próprio ou Admin" on public.posts;
 create policy "Posts - Update Próprio ou Admin" on public.posts for update using (auth.uid() = user_id or public.is_admin());
+
+drop policy if exists "Posts - Delete Próprio ou Admin" on public.posts;
 create policy "Posts - Delete Próprio ou Admin" on public.posts for delete using (auth.uid() = user_id or public.is_admin());
 
--- Policies genéricas para as demais (Simplificadas para garantir funcionamento)
+-- Demais Policies (Genéricas para garantir acesso)
 drop policy if exists "Comments - Leitura Pública" on public.comments;
 create policy "Comments - Leitura Pública" on public.comments for select using (true);
 drop policy if exists "Comments - Insert Autenticado" on public.comments;
@@ -158,15 +158,15 @@ drop policy if exists "Settings - Gestão Admin" on public.settings;
 create policy "Settings - Gestão Admin" on public.settings for all using (public.is_admin());
 
 -- =========================================================
--- 3. FUNÇÕES (SEGURAS COM SEARCH_PATH)
+-- 3. FUNÇÕES (Corrigidas com SEARCH_PATH = PUBLIC)
 -- =========================================================
 
--- 1. Verifica Admin
+-- Função para verificar Admin
 create or replace function public.is_admin()
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE: Remove alerta de segurança
 as $$
 begin
   return exists (
@@ -176,12 +176,12 @@ begin
 end;
 $$;
 
--- 2. Gatilho de Novo Usuário (CRÍTICO: Com ON CONFLICT para evitar erros)
+-- Trigger: Novo Usuário (Com tratamento de conflito)
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE
 as $$
 begin
   insert into public.users (id, email, name, role, avatar_cor, nivel, xp, pontos_totais)
@@ -193,7 +193,7 @@ begin
     coalesce(new.raw_user_meta_data->>'avatarCor', 'bg-blue-500'),
     1, 0, 0
   )
-  on conflict (id) do nothing; -- Impede erro se o usuário já existir
+  on conflict (id) do nothing; -- Evita erros se usuário já existir
   return new;
 end;
 $$;
@@ -203,12 +203,12 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- 3. Gatilho de Novo Post
+-- Trigger: Novo Post
 create or replace function public.handle_new_post()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE
 as $$
 begin
   update public.users
@@ -225,12 +225,12 @@ create trigger on_post_created
   after insert on public.posts
   for each row execute procedure public.handle_new_post();
 
--- 4. Gatilho de Novo Comentário
+-- Trigger: Novo Comentário
 create or replace function public.handle_new_comment()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE
 as $$
 begin
   update public.users
@@ -245,18 +245,17 @@ create trigger on_comment_created
   after insert on public.comments
   for each row execute procedure public.handle_new_comment();
 
--- 5. Gatilho de Novo Like
+-- Trigger: Novo Like
 create or replace function public.handle_new_like()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE
 as $$
 declare
   post_author_id uuid;
 begin
   select user_id into post_author_id from public.posts where id = new.post_id;
-  
   if post_author_id is not null and post_author_id != new.user_id then
     update public.users
     set likes_received = likes_received + 1,
@@ -272,12 +271,12 @@ create trigger on_like_created
   after insert on public.likes
   for each row execute procedure public.handle_new_like();
 
--- 6. RPC Trending Topics
+-- RPC: Trending Topics
 create or replace function public.get_trending_topics()
 returns table (tag text, count bigint)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public -- IMPORTANTE
 as $$
 begin
   return query
