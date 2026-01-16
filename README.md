@@ -1,20 +1,50 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# EJN Social - Rede Gamificada
 
-# Run and deploy your AI Studio app
+Uma rede social corporativa gamificada desenvolvida para o Instituto Escola Jovens de Negócios.
 
-This contains everything you need to run your app locally.
+## 🚀 Setup do Projeto
 
-View your app in AI Studio: https://ai.studio/apps/drive/1yUqWgjxF7nIkRQdUrX4Q5pEwbyrkSonn
+### 1. Instalar dependências
+```bash
+npm install
+```
 
-## Run Locally
+### 2. Configurar Supabase
+1. Crie um novo projeto em [supabase.com](https://supabase.com)
+2. Copie o arquivo `.env.example` para `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+3. Preencha `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` com suas credenciais do projeto Supabase.
+4. Vá até o **SQL Editor** no painel do Supabase e execute o conteúdo do arquivo `database/schema.sql` para criar as tabelas e políticas de segurança.
 
-**Prerequisites:**  Node.js
+### 3. Rodar localmente
+```bash
+npm run dev
+```
 
+### 4. Build para produção
+```bash
+npm run build
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## 📊 Estrutura do Banco de Dados
+
+O banco de dados utiliza PostgreSQL via Supabase com as seguintes tabelas principais:
+
+- **users**: Perfis estendidos (vinculados ao `auth.users`), contendo XP, nível, badges e dados sociais.
+- **posts**: Feed de notícias com suporte a imagens e fixação.
+- **comments**: Interações nos posts.
+- **likes**: Tabela de relacionamento para curtidas.
+- **missions**: Sistema de gamificação com missões diárias e conquistas.
+- **rewards**: Catálogo de loja para troca de EJN Coins.
+- **follows**: Sistema de seguidores/seguindo.
+- **settings**: Configurações globais da plataforma (regras de XP, nome, etc).
+
+## 🎨 Design System
+
+O projeto utiliza **Tailwind CSS** com uma paleta customizada inspirada no design Apple ("Glassmorphism", sombras suaves) e nas cores da marca EJN (Ouro, Verde Petróleo).
+
+- **Font**: Poppins
+- **Icons**: Lucide React
+- **Estilo**: Clean, Minimalista, Foco em Conteúdo

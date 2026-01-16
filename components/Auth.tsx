@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { AuthView, User } from '../types';
 import { storage } from '../services/storage';
@@ -38,18 +37,16 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
         
         // Se o cadastro na Auth funcionou, verifica o perfil público
         if (data.user) {
-           // Pequeno delay para dar tempo ao banco (se houver trigger)
+           // Pequeno delay para dar tempo ao Trigger do banco
            await new Promise(r => setTimeout(r, 1000));
            
            let user = await storage.getCurrentUser();
 
-           // Se o usuário não foi encontrado (significa que não há Trigger no banco),
-           // criamos o perfil manualmente agora para não travar o app.
+           // Se o Trigger falhou, tenta criar manualmente
            if (!user) {
-              console.log("Perfil não encontrado automaticamente. Criando manualmente...");
+              console.log("Perfil não encontrado automaticamente. Tentando criação manual...");
               try {
                   await storage.createProfile(data.user.id, email, name, role, avatarCor);
-                  // Tenta buscar novamente após criar
                   user = await storage.getCurrentUser();
               } catch (manualCreateError) {
                   console.error("Falha ao criar perfil manual:", manualCreateError);
@@ -59,25 +56,37 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
            if(user) {
                onLoginSuccess(user);
            } else {
-               // Fallback final: se mesmo assim falhar, pede login
-               alert('Cadastro realizado com sucesso! Por favor, faça login.');
+               alert('Cadastro realizado! Por favor, faça login.');
                setView(AuthView.LOGIN);
            }
         } else {
-            // Caso exija confirmação de e-mail configurada no Supabase
-            alert('Cadastro realizado! Verifique seu e-mail para confirmar a conta.');
+            alert('Verifique seu e-mail para confirmar a conta.');
             setView(AuthView.LOGIN);
         }
 
       } else {
         // Login Normal
         const { error } = await storage.signIn(email, password);
-        if (error) throw new Error('E-mail ou senha incorretos.');
+        if (error) {
+             if (error.message.includes("Failed to fetch")) {
+                 throw new Error("Erro de Conexão: Verifique se o arquivo .env.local tem a URL e Chave corretas do Supabase.");
+             }
+             throw new Error('E-mail ou senha incorretos.');
+        }
         
+        // Delay minúsculo para garantir propagação da sessão
+        await new Promise(r => setTimeout(r, 100));
+
         const user = await storage.getCurrentUser();
         
         if (!user) {
-             throw new Error('Perfil de usuário não encontrado. Entre em contato com o suporte.');
+             // Tenta buscar mais uma vez forçando refresh
+             const retryUser = await storage.getCurrentUser(false);
+             if (retryUser) {
+                 onLoginSuccess(retryUser);
+                 return;
+             }
+             throw new Error('Perfil de usuário não encontrado. Se você acabou de criar a conta, aguarde alguns instantes.');
         }
         
         if (user.status === 'suspended') throw new Error('Esta conta está suspensa.');
@@ -86,7 +95,11 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
       }
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Ocorreu um erro inesperado.');
+      const msg = err.message || 'Ocorreu um erro inesperado.';
+      // Traduz erros comuns do Supabase
+      if (msg.includes('Invalid login credentials')) setError('E-mail ou senha incorretos.');
+      else if (msg.includes('Failed to fetch')) setError('Erro de conexão com o banco de dados. Verifique as chaves no .env.local');
+      else setError(msg);
     } finally {
       setLoading(false);
     }
@@ -146,7 +159,7 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
             </div>
 
             {error && (
-              <div className="text-red-500 text-xs font-bold bg-red-50 p-4 rounded-xl border border-red-100 animate-fadeIn">
+              <div className="text-red-500 text-xs font-bold bg-red-50 p-4 rounded-xl border border-red-100 animate-fadeIn leading-relaxed">
                 {error}
               </div>
             )}

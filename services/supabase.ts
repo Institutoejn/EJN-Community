@@ -1,10 +1,21 @@
+import { createClient } from '@supabase/supabase-js'
 
-import { createClient } from '@supabase/supabase-js';
+// Fix: Cast import.meta to any to resolve missing type definition for vite/client and env property
+const env = (import.meta as any).env
 
-// URL do seu projeto Supabase
-const SUPABASE_URL = 'https://sjiiufdzandfdvhyunuw.supabase.co'; 
+// Fallback to placeholder to prevent "supabaseUrl is required" crash if env vars are missing
+const supabaseUrl = env?.VITE_SUPABASE_URL || 'https://placeholder.supabase.co'
+const supabaseAnonKey = env?.VITE_SUPABASE_ANON_KEY || 'placeholder-key'
 
-// COLE ABAIXO A CHAVE 'anon public' (A PRIMEIRA DA LISTA NO SEU PRINT)
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNqaWl1ZmR6YW5kZmR2aHl1bnV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcxNzg0ODgsImV4cCI6MjA4Mjc1NDQ4OH0.gLfaNFf8lP5DQjgpJTWorLhs1iZjflA46UdfoQdNW2s';
+if (supabaseUrl.includes('placeholder') || supabaseUrl.includes('seu-projeto')) {
+    console.error("⚠️ ATENÇÃO: As chaves do Supabase não foram configuradas corretamente no .env.local. O login irá falhar com 'Failed to fetch'.");
+}
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    storage: localStorage
+  }
+})
