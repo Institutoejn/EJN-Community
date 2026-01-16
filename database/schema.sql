@@ -1,12 +1,13 @@
 -- =========================================================
--- 1. TABELAS (Estrutura Base)
+-- 1. LIMPEZA E ESTRUTURA (PREPARAÇÃO)
 -- =========================================================
 
+-- Recria tabelas apenas se necessário, mantendo dados
 create table if not exists public.users (
   id uuid references auth.users not null primary key,
   email text,
   name text,
-  role text default 'aluno', -- 'aluno' | 'gestor'
+  role text default 'aluno',
   nivel int default 1,
   xp int default 0,
   xp_proximo_nivel int default 1000,
@@ -25,6 +26,7 @@ create table if not exists public.users (
   created_at timestamptz default now()
 );
 
+-- Demais tabelas (garantindo existência)
 create table if not exists public.posts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references public.users(id) on delete cascade not null,
@@ -33,7 +35,6 @@ create table if not exists public.posts (
   is_pinned boolean default false,
   created_at timestamptz default now()
 );
-
 create table if not exists public.comments (
   id uuid default gen_random_uuid() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -41,7 +42,6 @@ create table if not exists public.comments (
   content text not null,
   created_at timestamptz default now()
 );
-
 create table if not exists public.likes (
   id uuid default gen_random_uuid() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -49,7 +49,6 @@ create table if not exists public.likes (
   created_at timestamptz default now(),
   unique(post_id, user_id)
 );
-
 create table if not exists public.follows (
   id uuid default gen_random_uuid() primary key,
   follower_id uuid references public.users(id) on delete cascade not null,
@@ -57,7 +56,6 @@ create table if not exists public.follows (
   created_at timestamptz default now(),
   unique(follower_id, following_id)
 );
-
 create table if not exists public.missions (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -69,7 +67,6 @@ create table if not exists public.missions (
   is_active boolean default true,
   created_at timestamptz default now()
 );
-
 create table if not exists public.rewards (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -82,7 +79,6 @@ create table if not exists public.rewards (
   category text default 'Produto',
   created_at timestamptz default now()
 );
-
 create table if not exists public.settings (
   id int primary key default 1,
   platform_name text default 'Instituto EJN',
@@ -93,10 +89,9 @@ create table if not exists public.settings (
 );
 
 -- =========================================================
--- 2. ROW LEVEL SECURITY (POLICIES)
+-- 2. POLÍTICAS DE SEGURANÇA (RLS) - REFORÇADAS
 -- =========================================================
 
--- Habilita RLS em todas as tabelas
 alter table public.users enable row level security;
 alter table public.posts enable row level security;
 alter table public.comments enable row level security;
@@ -106,53 +101,72 @@ alter table public.missions enable row level security;
 alter table public.rewards enable row level security;
 alter table public.settings enable row level security;
 
--- USERS
+-- Limpa policies antigas para evitar duplicidade/erros
+drop policy if exists "Users - Leitura Pública" on public.users;
+drop policy if exists "Users - Update Próprio" on public.users;
+drop policy if exists "Users - Insert Próprio" on public.users;
+drop policy if exists "Users - Delete Admin" on public.users;
+
 create policy "Users - Leitura Pública" on public.users for select using (true);
 create policy "Users - Update Próprio" on public.users for update using (auth.uid() = id);
+-- Permite insert se o ID bater com o Auth (crucial para auto-healing)
 create policy "Users - Insert Próprio" on public.users for insert with check (auth.uid() = id);
 create policy "Users - Delete Admin" on public.users for delete using (public.is_admin());
 
--- POSTS
+-- Reaplicando políticas essenciais de Posts
+drop policy if exists "Posts - Leitura Pública" on public.posts;
+drop policy if exists "Posts - Insert Autenticado" on public.posts;
+drop policy if exists "Posts - Update Próprio ou Admin" on public.posts;
+drop policy if exists "Posts - Delete Próprio ou Admin" on public.posts;
+
 create policy "Posts - Leitura Pública" on public.posts for select using (true);
 create policy "Posts - Insert Autenticado" on public.posts for insert with check (auth.role() = 'authenticated');
 create policy "Posts - Update Próprio ou Admin" on public.posts for update using (auth.uid() = user_id or public.is_admin());
 create policy "Posts - Delete Próprio ou Admin" on public.posts for delete using (auth.uid() = user_id or public.is_admin());
 
--- COMMENTS
+-- Policies genéricas para as demais (Simplificadas para garantir funcionamento)
+drop policy if exists "Comments - Leitura Pública" on public.comments;
 create policy "Comments - Leitura Pública" on public.comments for select using (true);
+drop policy if exists "Comments - Insert Autenticado" on public.comments;
 create policy "Comments - Insert Autenticado" on public.comments for insert with check (auth.role() = 'authenticated');
+drop policy if exists "Comments - Delete Próprio ou Admin" on public.comments;
 create policy "Comments - Delete Próprio ou Admin" on public.comments for delete using (auth.uid() = user_id or public.is_admin());
 
--- LIKES
+drop policy if exists "Likes - Leitura Pública" on public.likes;
 create policy "Likes - Leitura Pública" on public.likes for select using (true);
+drop policy if exists "Likes - Insert/Delete Próprio" on public.likes;
 create policy "Likes - Insert/Delete Próprio" on public.likes for all using (auth.uid() = user_id);
 
--- FOLLOWS
+drop policy if exists "Follows - Leitura Pública" on public.follows;
 create policy "Follows - Leitura Pública" on public.follows for select using (true);
+drop policy if exists "Follows - Gestão Própria" on public.follows;
 create policy "Follows - Gestão Própria" on public.follows for all using (auth.uid() = follower_id);
 
--- MISSIONS & REWARDS (Leitura pública, Gestão Admin)
+drop policy if exists "Missions - Leitura" on public.missions;
 create policy "Missions - Leitura" on public.missions for select using (true);
+drop policy if exists "Missions - Gestão Admin" on public.missions;
 create policy "Missions - Gestão Admin" on public.missions for all using (public.is_admin());
 
+drop policy if exists "Rewards - Leitura" on public.rewards;
 create policy "Rewards - Leitura" on public.rewards for select using (true);
+drop policy if exists "Rewards - Gestão Admin" on public.rewards;
 create policy "Rewards - Gestão Admin" on public.rewards for all using (public.is_admin());
 
--- SETTINGS
+drop policy if exists "Settings - Leitura" on public.settings;
 create policy "Settings - Leitura" on public.settings for select using (true);
+drop policy if exists "Settings - Gestão Admin" on public.settings;
 create policy "Settings - Gestão Admin" on public.settings for all using (public.is_admin());
 
-
 -- =========================================================
--- 3. FUNÇÕES E TRIGGERS (Corrigidos para search_path)
+-- 3. FUNÇÕES (SEGURAS COM SEARCH_PATH)
 -- =========================================================
 
--- Função Auxiliar: Verifica se é admin (gestor)
+-- 1. Verifica Admin
 create or replace function public.is_admin()
 returns boolean
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   return exists (
@@ -162,12 +176,12 @@ begin
 end;
 $$;
 
--- Trigger: Novo Usuário (Sincroniza Auth -> Public)
+-- 2. Gatilho de Novo Usuário (CRÍTICO: Com ON CONFLICT para evitar erros)
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   insert into public.users (id, email, name, role, avatar_cor, nivel, xp, pontos_totais)
@@ -178,7 +192,8 @@ begin
     coalesce(new.raw_user_meta_data->>'role', 'aluno'),
     coalesce(new.raw_user_meta_data->>'avatarCor', 'bg-blue-500'),
     1, 0, 0
-  );
+  )
+  on conflict (id) do nothing; -- Impede erro se o usuário já existir
   return new;
 end;
 $$;
@@ -188,12 +203,12 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- Trigger: Novo Post (XP e Contagem)
+-- 3. Gatilho de Novo Post
 create or replace function public.handle_new_post()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   update public.users
@@ -210,12 +225,12 @@ create trigger on_post_created
   after insert on public.posts
   for each row execute procedure public.handle_new_post();
 
--- Trigger: Novo Comentário (XP)
+-- 4. Gatilho de Novo Comentário
 create or replace function public.handle_new_comment()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   update public.users
@@ -230,12 +245,12 @@ create trigger on_comment_created
   after insert on public.comments
   for each row execute procedure public.handle_new_comment();
 
--- Trigger: Novo Like (Notificação e XP para o autor do post)
+-- 5. Gatilho de Novo Like
 create or replace function public.handle_new_like()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 declare
   post_author_id uuid;
@@ -257,12 +272,12 @@ create trigger on_like_created
   after insert on public.likes
   for each row execute procedure public.handle_new_like();
 
--- Função RPC: Trending Topics
+-- 6. RPC Trending Topics
 create or replace function public.get_trending_topics()
 returns table (tag text, count bigint)
 language plpgsql
 security definer
-set search_path = public -- FIX: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   return query
@@ -278,33 +293,20 @@ end;
 $$;
 
 -- =========================================================
--- 4. STORAGE (BUCKETS) - Configuração Essencial para Imagens
+-- 4. STORAGE
 -- =========================================================
-
 insert into storage.buckets (id, name, public)
 values ('media', 'media', true)
 on conflict (id) do nothing;
 
--- Política: Imagens são públicas para visualização
 drop policy if exists "Imagens são públicas" on storage.objects;
-create policy "Imagens são públicas"
-on storage.objects for select
-using ( bucket_id = 'media' );
+create policy "Imagens são públicas" on storage.objects for select using ( bucket_id = 'media' );
 
--- Política: Upload liberado para usuários logados
 drop policy if exists "Upload de imagens" on storage.objects;
-create policy "Upload de imagens"
-on storage.objects for insert
-with check ( bucket_id = 'media' and auth.role() = 'authenticated' );
+create policy "Upload de imagens" on storage.objects for insert with check ( bucket_id = 'media' and auth.role() = 'authenticated' );
 
--- Política: Usuário pode atualizar seus arquivos
 drop policy if exists "Update imagens" on storage.objects;
-create policy "Update imagens"
-on storage.objects for update
-using ( bucket_id = 'media' and auth.uid() = owner );
+create policy "Update imagens" on storage.objects for update using ( bucket_id = 'media' and auth.uid() = owner );
 
--- Política: Usuário pode deletar seus arquivos
 drop policy if exists "Delete imagens" on storage.objects;
-create policy "Delete imagens"
-on storage.objects for delete
-using ( bucket_id = 'media' and auth.uid() = owner );
+create policy "Delete imagens" on storage.objects for delete using ( bucket_id = 'media' and auth.uid() = owner );
