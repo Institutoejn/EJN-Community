@@ -62,6 +62,14 @@ const mapUser = (dbUser: any): User => ({
 });
 
 export const storage = {
+  // --- MÉTODOS SÍNCRONOS (INSTANTÂNEOS) ---
+  getLocalCurrentUser: (): User | null => localCache.get<User>(CACHE_KEYS.USER),
+  getLocalPosts: (): Post[] => localCache.get<Post[]>(CACHE_KEYS.POSTS) || [],
+  getLocalUsers: (): User[] => localCache.get<User[]>(CACHE_KEYS.USERS) || [],
+  getLocalMissions: (): Mission[] => localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [],
+  getLocalRewards: (): RewardItem[] => localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [],
+  getLocalTrending: (): TrendingTopic[] => localCache.get<TrendingTopic[]>(CACHE_KEYS.TRENDING) || [],
+
   uploadImage: async (file: File, path: string): Promise<string> => {
     try {
         const fileExt = file.name.split('.').pop();
@@ -81,33 +89,29 @@ export const storage = {
     }
   },
 
-  getLocalPosts: (): Post[] => localCache.get<Post[]>(CACHE_KEYS.POSTS) || [],
-  getLocalUsers: (): User[] => localCache.get<User[]>(CACHE_KEYS.USERS) || [],
-  getLocalMissions: (): Mission[] => localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [],
-  getLocalRewards: (): RewardItem[] => localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [],
-  getLocalTrending: (): TrendingTopic[] => localCache.get<TrendingTopic[]>(CACHE_KEYS.TRENDING) || [],
-
   // --- MANTÉM OS DADOS DO USUÁRIO ---
   getCurrentUser: async (skipNetwork = false): Promise<User | null> => {
     try {
-        // 1. Tenta Cache
-        const cachedUser = localCache.get<User>(CACHE_KEYS.USER);
-        if (skipNetwork && cachedUser) return cachedUser;
+        // 1. Tenta Cache Imediato se solicitado
+        if (skipNetwork) {
+            const cached = localCache.get<User>(CACHE_KEYS.USER);
+            if (cached) return cached;
+        }
 
         // 2. Verifica Sessão
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError || !session) return null;
 
-        // 3. Busca Perfil Público
+        // 3. Busca Perfil Público com Retry implícito
         let { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
             .eq('id', session.user.id)
             .maybeSingle(); 
 
-        // --- SELF HEALING: Corrigir "Helena Alves" e outros usuários invisíveis ---
+        // --- SELF HEALING (Auto-Reparo de Usuários Travados/Invisíveis) ---
         if (!profile) {
-            console.warn("Detectado usuário sem perfil público. Iniciando auto-reparo...");
+            console.warn("Auto-reparo: Criando perfil ausente...");
             try {
                 const meta = session.user.user_metadata || {};
                 const newUser = {
@@ -119,40 +123,32 @@ export const storage = {
                     nivel: 1, xp: 0, pontos_totais: 0
                 };
                 
-                // USA UPSERT: Se já existir (race condition), atualiza. Se não, cria.
-                // Isso evita erros 500 se o usuário foi criado parcialmente.
+                // UPSERT para evitar conflito se o trigger SQL já tiver rodado
                 const { error: insertError } = await supabase.from('users').upsert(newUser);
-                
-                if (insertError) {
-                    console.error("Erro no upsert do auto-reparo:", insertError);
-                    // Tenta ler novamente, talvez tenha sido criado por trigger
+                if (!insertError) profile = newUser;
+                else {
+                    // Última tentativa de leitura após falha de insert (race condition)
                     const retry = await supabase.from('users').select('*').eq('id', session.user.id).maybeSingle();
                     if (retry.data) profile = retry.data;
-                    else throw insertError;
-                } else {
-                    // Sucesso na criação manual
-                    profile = newUser;
                 }
             } catch (healError) {
-                console.error("Falha crítica no auto-reparo:", healError);
-                return null;
+                console.error("Falha no auto-reparo:", healError);
             }
         }
 
-        if (!profile) return null; // Se ainda assim falhou
+        if (!profile) return null; 
 
         const mappedUser = mapUser(profile);
 
-        // 4. Carrega dados sociais em paralelo (Com timeout para não travar loading)
+        // 4. Carrega dados sociais em paralelo sem bloquear a UI principal
+        // O timeout garante que redes lentas não travem o login
         try {
             const socialPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
                 supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id)
             ]);
             
-            // Timeout de 2s para dados sociais (não essenciais)
-            const timeoutSocial = new Promise<any>((resolve) => setTimeout(() => resolve(null), 2000));
-            
+            const timeoutSocial = new Promise<any>((resolve) => setTimeout(() => resolve(null), 1500));
             const results = await Promise.race([socialPromise, timeoutSocial]);
 
             if (results) {
@@ -161,14 +157,12 @@ export const storage = {
                 mappedUser.followingCount = mappedUser.followingIds.length;
                 mappedUser.followersCount = followersResult.count || 0;
             }
-        } catch (e) {
-            console.warn("Erro ao carregar social stats (ignorando para não travar)", e);
-        }
+        } catch (e) { /* Ignora erros não críticos de contagem */ }
 
         localCache.set(CACHE_KEYS.USER, mappedUser);
         return mappedUser;
     } catch (fatalError) {
-        console.error("Erro fatal no getCurrentUser", fatalError);
+        console.error("Erro no getCurrentUser", fatalError);
         return localCache.get<User>(CACHE_KEYS.USER);
     }
   },
@@ -177,7 +171,6 @@ export const storage = {
     const cached = localCache.get<User[]>(CACHE_KEYS.USERS);
     if (!forceRefresh && cached) return cached;
     
-    // Otimização: Não precisa selecionar badges ou arrays gigantescos para a lista
     const { data, error } = await supabase.from('users').select('*').order('xp', { ascending: false });
     if (error) return cached || [];
     
@@ -211,13 +204,10 @@ export const storage = {
   deleteUser: async (userId: string) => {
     const { error } = await supabase.from('users').delete().eq('id', userId);
     if (error) throw error;
-    
-    // Atualiza cache local de usuários removendo o deletado
     const currentUsers = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
     localCache.set(CACHE_KEYS.USERS, currentUsers.filter(u => u.id !== userId));
   },
 
-  // --- POSTS ---
   getPosts: async (forceRefresh = false): Promise<Post[]> => {
     const cached = localCache.get<Post[]>(CACHE_KEYS.POSTS);
     if (!forceRefresh && cached) return cached;
@@ -226,7 +216,8 @@ export const storage = {
     const { data, error } = await supabase
       .from('posts')
       .select(`*, users:user_id (name, avatar_url, avatar_cor), comments (*, users:user_id (name, avatar_url, avatar_cor)), likes (user_id)`)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(50); // Limite de 50 posts para performance
       
     if (error) return cached || [];
     
@@ -264,12 +255,12 @@ export const storage = {
   deletePost: async (postId: string) => {
     const { error } = await supabase.from('posts').delete().eq('id', postId);
     if (error) throw error;
-    // Remove do cache local
     const posts = localCache.get<Post[]>(CACHE_KEYS.POSTS) || [];
     localCache.set(CACHE_KEYS.POSTS, posts.filter(p => p.id !== postId));
   },
 
   toggleLike: async (postId: string, userId: string) => {
+      // Optimistic update handle in UI, fire and forget here
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
       if (data) await supabase.from('likes').delete().eq('id', data.id);
       else await supabase.from('likes').insert({ post_id: postId, user_id: userId });
@@ -285,7 +276,6 @@ export const storage = {
     return data as TrendingTopic[];
   },
 
-  // --- MISSIONS & REWARDS ---
   getMissions: async (): Promise<Mission[]> => {
     const { data, error } = await supabase.from('missions').select('*').order('created_at', { ascending: false });
     if (error) return localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
@@ -312,6 +302,7 @@ export const storage = {
       const missions = localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [];
       localCache.set(CACHE_KEYS.MISSIONS, missions.filter(m => m.id.toString() !== id.toString()));
   },
+
   getRewards: async (): Promise<RewardItem[]> => {
     const { data, error } = await supabase.from('rewards').select('*').order('cost', { ascending: true });
     if (error) return localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
@@ -344,7 +335,6 @@ export const storage = {
     if (error || !data) return { platformName: 'Rede Social EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10 };
     return { platformName: data.platform_name, xpPerPost: data.xp_per_post, xpPerComment: data.xp_per_comment, xpPerLikeReceived: data.xp_per_like, coinsPerPost: data.coins_per_post };
   },
-
   saveSettings: async (settings: AppSettings) => {
       const { error } = await supabase.from('settings').upsert({ id: 1, platform_name: settings.platformName, xp_per_post: settings.xpPerPost, xp_per_comment: settings.xpPerComment, xp_per_like: settings.xpPerLikeReceived, coins_per_post: settings.coinsPerPost });
       if (error) throw error;

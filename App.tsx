@@ -10,8 +10,7 @@ import { storage } from './services/storage';
 import { supabase } from './services/supabase';
 import { Icons } from './constants';
 
-// --- LAZY LOADING ---
-// As views são carregadas sob demanda, mas faremos um "warm up" delas
+// --- LAZY LOADING OTIMIZADO ---
 const Feed = lazy(() => import('./components/Feed'));
 const Profile = lazy(() => import('./components/Profile'));
 const Ranking = lazy(() => import('./components/Ranking'));
@@ -30,17 +29,19 @@ const PageSkeleton = () => (
 );
 
 const App: React.FC = () => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // ⚡ CARGA INSTANTÂNEA: Inicializa direto do localStorage, sem esperar Promise
+  const [currentUser, setCurrentUser] = useState<User | null>(() => storage.getLocalCurrentUser());
+  
+  // Se já temos usuário local, não mostramos loading. Se não temos, mostramos apenas até verificar auth.
+  const [loading, setLoading] = useState(() => !storage.getLocalCurrentUser());
+  
   const [currentView, setCurrentView] = useState<AppView>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('ejn_last_view');
-      return (saved as AppView) || 'FEED';
+      return (localStorage.getItem('ejn_last_view') as AppView) || 'FEED';
     }
     return 'FEED';
   });
 
-  const [loading, setLoading] = useState(true);
-  const [loadingError, setLoadingError] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -52,91 +53,76 @@ const App: React.FC = () => {
   useEffect(() => {
     let mounted = true;
 
-    // --- SAFETY TIMEOUT (Solução para o loop infinito) ---
-    // Se em 7 segundos o app não decidir se está logado ou não, forçamos o estado.
+    // --- SAFETY TIMEOUT ---
+    // Mesmo com a lógica otimizada, se a rede travar no Auth, liberamos em 4s
     const safetyTimeout = setTimeout(() => {
         if (mounted && loading) {
-            console.warn("⚠️ Carregamento demorou muito. Forçando liberação da UI.");
             setLoading(false);
-            // Se não carregou usuário até agora, pode ser um token inválido travado
-            if (!currentUser) {
-                storage.signOut().catch(() => {});
-            }
         }
-    }, 7000);
+    }, 4000);
 
     const initApp = async () => {
-      // 1. Tenta carga instantânea do cache
-      const cachedUser = await storage.getCurrentUser(true);
-      if (cachedUser) {
-          if (mounted) {
-              setCurrentUser(cachedUser);
-              setLoading(false); 
-              // Dispara atualização em background
-              preFetchData();
-              // Aquece os componentes Lazy para navegação rápida
-              warmUpViews();
-          }
-      }
-
-      // 2. Verifica sessão real no servidor
+      // Background Refresh: Verifica se o usuário local ainda é válido no servidor
       try {
-          // Timeout de 5s para a chamada de rede específica
-          const freshUserPromise = storage.getCurrentUser(false);
-          const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+          // Se já temos usuário local, isso roda em background sem bloquear UI
+          const freshUser = await storage.getCurrentUser(false);
           
-          const freshUser = await Promise.race([freshUserPromise, timeoutPromise]) as User | null;
-
           if (mounted) {
              if (freshUser) {
                  if (freshUser.status === 'suspended') {
                     handleLogout(); 
                     return;
                  }
-                 setCurrentUser(freshUser);
+                 // Atualiza silenciosamente os dados (XP, nível, etc)
+                 if (JSON.stringify(freshUser) !== JSON.stringify(currentUser)) {
+                    setCurrentUser(freshUser);
+                 }
                  preFetchData(); 
-             } else if (!cachedUser) {
-                 // Se não tem cache e o freshUser veio nulo (ou timeout), assume deslogado
-                 setCurrentUser(null);
+             } else if (!currentUser) {
+                 // Se não tinha local e o remoto veio null, libera a tela de login
+                 setLoading(false);
+             } else {
+                 // Tinha local, mas remoto falhou/null -> Possível logout ou erro de rede
+                 // Mantemos o local se for erro de rede, deslogamos se for 401
+                 const { data } = await supabase.auth.getSession();
+                 if (!data.session) {
+                     handleLogout();
+                 }
              }
-             setLoading(false);
+             
+             // Garante que loading saia se ainda estiver
+             if (!currentUser) setLoading(false);
           }
       } catch (err) {
-          console.error("Erro na inicialização:", err);
-          if (!cachedUser && mounted) {
-             setLoading(false);
-          }
+          console.error("Erro na verificação de sessão:", err);
+          if (mounted) setLoading(false);
       }
     };
 
     initApp();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_OUT' || !session) {
+      if (event === 'SIGNED_OUT') {
         if (mounted) {
           setCurrentUser(null);
-          setCurrentView('FEED');
           setLoading(false);
         }
       } else if (event === 'SIGNED_IN' && session) {
-         // Não ativa loading aqui para evitar piscar a tela se já tivermos o user em cache
-         const user = await storage.getCurrentUser();
-         if (mounted && user) {
-             if (user.status === 'suspended') {
-                alert('Sua conta foi suspensa pela administração.');
-                await storage.signOut();
-                return;
-             }
-             setCurrentUser(user);
-             setLoading(false);
-             preFetchData();
-             warmUpViews();
-         } else if (mounted) {
-             // Caso raro: Logou no Auth mas falhou em pegar o perfil
-             setLoading(false);
+         // Login bem sucedido via Auth Component ou recuperação de sessão
+         if (!currentUser) {
+            const user = await storage.getCurrentUser();
+            if (mounted && user) {
+                setCurrentUser(user);
+                setLoading(false);
+                preFetchData();
+                warmUpViews();
+            }
          }
       }
     });
+
+    // Pré-carrega views para navegação instantânea
+    if (currentUser) warmUpViews();
 
     return () => {
       mounted = false;
@@ -145,9 +131,9 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Monitora mudanças críticas no usuário em tempo real
   useEffect(() => {
     if (!currentUser) return;
-
     const channel = supabase.channel(`security-${currentUser.id}`)
       .on('postgres_changes', { 
         event: 'UPDATE', 
@@ -157,58 +143,45 @@ const App: React.FC = () => {
       }, (payload) => {
         const newUser = payload.new as any;
         if (newUser.status === 'suspended') {
-           alert("Sessão encerrada: Sua conta foi suspensa por um administrador.");
+           alert("Sessão encerrada: Sua conta foi suspensa.");
            handleLogout();
-        } else if (newUser.role !== currentUser.role) {
-           setCurrentUser(prev => prev ? { ...prev, role: newUser.role } : null);
         }
       })
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [currentUser?.id]);
 
-  // Carrega dados em background para popular o localStorage/Cache
   const preFetchData = () => {
-    // Isso garante que quando o usuário clicar em Ranking/Missões, os dados já estarão lá
+    // Dispara requests em paralelo sem await
     storage.getUsers().catch(() => {});
     storage.getMissions().catch(() => {});
     storage.getRewards().catch(() => {});
     storage.getTrending().catch(() => {});
   };
 
-  // Força o import dos componentes lazy em background para evitar spinners na navegação
   const warmUpViews = () => {
+    // Import dinâmico em background
     setTimeout(() => {
         import('./components/Ranking');
         import('./components/Missions');
         import('./components/Profile');
-        import('./components/AdminPanel');
-    }, 2000); // 2 segundos após carga inicial
+    }, 1000);
   };
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
-    setLoadingError(false);
     setCurrentView('FEED');
-    localStorage.setItem('ejn_last_view', 'FEED');
     setLoading(false);
     preFetchData();
-    warmUpViews();
   };
 
   const handleLogout = async () => {
-    setLoading(true);
     try {
         await storage.signOut();
         setCurrentUser(null);
-        localStorage.clear();
-        sessionStorage.clear();
+        localStorage.clear(); 
         window.location.href = window.location.origin;
     } catch (error) {
-        console.error("Erro ao sair:", error);
         localStorage.clear();
         window.location.href = window.location.origin;
     }
@@ -222,6 +195,7 @@ const App: React.FC = () => {
     if (!currentUser || currentUser.id === targetId) return;
     if (currentUser.followingIds.includes(targetId)) return;
 
+    // Optimistic Update
     const updatedUser: User = {
       ...currentUser,
       followingCount: currentUser.followingCount + 1,
@@ -234,7 +208,7 @@ const App: React.FC = () => {
         await storage.followUser(currentUser.id, targetId);
         await storage.saveUser(updatedUser);
     } catch (error) {
-        console.error("Erro ao seguir usuário:", error);
+        console.error("Erro ao seguir:", error);
     }
   };
 
@@ -242,13 +216,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-apple-bg flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin"></div>
-        <p className="text-xs font-bold text-apple-tertiary animate-pulse">Autenticando...</p>
-        <button 
-           onClick={() => setLoading(false)} 
-           className="mt-4 text-[10px] text-red-500 font-bold hover:underline"
-        >
-           Demorando muito? Cancelar
-        </button>
+        <p className="text-xs font-bold text-apple-tertiary animate-pulse">Carregando...</p>
       </div>
     );
   }
@@ -262,6 +230,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-apple-bg selection:bg-ejn-gold selection:text-ejn-dark relative font-sans pb-20 lg:pb-0">
+        {/* Mobile Menu Overlay */}
         {isMobileMenuOpen && (
           <div 
             className="fixed inset-0 bg-black/30 backdrop-blur-md z-[100] transition-opacity duration-300 lg:hidden"
@@ -269,13 +238,14 @@ const App: React.FC = () => {
           />
         )}
         
+        {/* Sidebar Mobile */}
         <div className={`
           fixed top-0 left-0 bottom-0 w-[280px] bg-apple-bg z-[101] shadow-2xl transition-transform duration-300 ease-out p-6 overflow-y-auto lg:hidden
           ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         `}>
           <div className="flex justify-between items-center mb-8">
-            <div className="font-bold text-xl tracking-tight text-apple-text">Opções</div>
-            <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-apple-border/20 rounded-full text-apple-secondary hover:text-apple-text apple-transition">
+            <div className="font-bold text-xl tracking-tight text-apple-text">Menu</div>
+            <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-apple-border/20 rounded-full text-apple-secondary">
               <Icons.X />
             </button>
           </div>
@@ -284,7 +254,7 @@ const App: React.FC = () => {
              {currentUser.role === 'gestor' && (
                <button
                  onClick={() => { setCurrentView('ADMIN'); setIsMobileMenuOpen(false); }}
-                 className={`w-full px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 apple-transition ${currentView === 'ADMIN' ? 'bg-ejn-dark text-white' : 'bg-white text-ejn-dark border border-ejn-dark/10 shadow-sm'}`}
+                 className={`w-full px-4 py-3 rounded-xl text-sm font-bold flex items-center gap-3 apple-transition ${currentView === 'ADMIN' ? 'bg-ejn-dark text-white' : 'bg-white text-ejn-dark border border-ejn-dark/10'}`}
                >
                  <Icons.Edit className="w-5 h-5" /> Painel do Gestor
                </button>
