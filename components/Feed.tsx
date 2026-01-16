@@ -45,7 +45,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   }, []);
 
   useEffect(() => {
-    // Atualiza posts em background, sem bloquear UI
+    // Atualiza posts em background
+    // NOTA: O storage.getPosts já ordena por 'created_at' DESC (Do mais recente para o mais antigo)
     fetchPosts(true);
 
     const channel = supabase.channel('feed-updates')
@@ -113,7 +114,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             likedByMe: false
         };
 
-        // UI Optimistic Update
+        // UI Optimistic Update: Adiciona no topo (Feed reverso)
         setPosts([optimisticPost, ...posts]);
         
         setNewPost('');

@@ -1,5 +1,5 @@
 -- =========================================================
--- 1. ESTRUTURA BASE (Garanta que tabelas existam)
+-- 1. ESTRUTURA BASE (Manter existente)
 -- =========================================================
 create table if not exists public.users (
   id uuid references auth.users not null primary key,
@@ -24,7 +24,6 @@ create table if not exists public.users (
   created_at timestamptz default now()
 );
 
--- Demais tabelas
 create table if not exists public.posts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references public.users(id) on delete cascade not null,
@@ -33,6 +32,7 @@ create table if not exists public.posts (
   is_pinned boolean default false,
   created_at timestamptz default now()
 );
+
 create table if not exists public.comments (
   id uuid default gen_random_uuid() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -40,6 +40,7 @@ create table if not exists public.comments (
   content text not null,
   created_at timestamptz default now()
 );
+
 create table if not exists public.likes (
   id uuid default gen_random_uuid() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -47,6 +48,8 @@ create table if not exists public.likes (
   created_at timestamptz default now(),
   unique(post_id, user_id)
 );
+
+-- Demais tabelas auxiliares
 create table if not exists public.follows (
   id uuid default gen_random_uuid() primary key,
   follower_id uuid references public.users(id) on delete cascade not null,
@@ -98,33 +101,25 @@ alter table public.missions enable row level security;
 alter table public.rewards enable row level security;
 alter table public.settings enable row level security;
 
--- Users Policies
+-- Recria policies para garantir acesso correto
 drop policy if exists "Users - Leitura Pública" on public.users;
 create policy "Users - Leitura Pública" on public.users for select using (true);
-
 drop policy if exists "Users - Update Próprio" on public.users;
 create policy "Users - Update Próprio" on public.users for update using (auth.uid() = id);
-
 drop policy if exists "Users - Insert Próprio" on public.users;
 create policy "Users - Insert Próprio" on public.users for insert with check (auth.uid() = id);
-
 drop policy if exists "Users - Delete Admin" on public.users;
 create policy "Users - Delete Admin" on public.users for delete using (public.is_admin());
 
--- Posts Policies
 drop policy if exists "Posts - Leitura Pública" on public.posts;
 create policy "Posts - Leitura Pública" on public.posts for select using (true);
-
 drop policy if exists "Posts - Insert Autenticado" on public.posts;
 create policy "Posts - Insert Autenticado" on public.posts for insert with check (auth.role() = 'authenticated');
-
 drop policy if exists "Posts - Update Próprio ou Admin" on public.posts;
 create policy "Posts - Update Próprio ou Admin" on public.posts for update using (auth.uid() = user_id or public.is_admin());
-
 drop policy if exists "Posts - Delete Próprio ou Admin" on public.posts;
 create policy "Posts - Delete Próprio ou Admin" on public.posts for delete using (auth.uid() = user_id or public.is_admin());
 
--- Demais Policies (Genéricas para garantir acesso)
 drop policy if exists "Comments - Leitura Pública" on public.comments;
 create policy "Comments - Leitura Pública" on public.comments for select using (true);
 drop policy if exists "Comments - Insert Autenticado" on public.comments;
@@ -158,7 +153,7 @@ drop policy if exists "Settings - Gestão Admin" on public.settings;
 create policy "Settings - Gestão Admin" on public.settings for all using (public.is_admin());
 
 -- =========================================================
--- 3. FUNÇÕES (Corrigidas com SEARCH_PATH = PUBLIC)
+-- 3. TRIGGERS E LÓGICA DE GAMIFICAÇÃO (CORRIGIDOS)
 -- =========================================================
 
 -- Função para verificar Admin
@@ -166,7 +161,7 @@ create or replace function public.is_admin()
 returns boolean
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE: Remove alerta de segurança
+set search_path = public
 as $$
 begin
   return exists (
@@ -176,12 +171,12 @@ begin
 end;
 $$;
 
--- Trigger: Novo Usuário (Com tratamento de conflito)
+-- 3.1 GESTÃO DE USUÁRIOS
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE
+set search_path = public
 as $$
 begin
   insert into public.users (id, email, name, role, avatar_cor, nivel, xp, pontos_totais)
@@ -193,7 +188,7 @@ begin
     coalesce(new.raw_user_meta_data->>'avatarCor', 'bg-blue-500'),
     1, 0, 0
   )
-  on conflict (id) do nothing; -- Evita erros se usuário já existir
+  on conflict (id) do nothing;
   return new;
 end;
 $$;
@@ -203,18 +198,18 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- Trigger: Novo Post
+-- 3.2 GESTÃO DE POSTS
 create or replace function public.handle_new_post()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE
+set search_path = public
 as $$
 begin
   update public.users
   set posts_count = posts_count + 1,
-      xp = xp + 50,
-      pontos_totais = pontos_totais + 10
+      xp = xp + 50, -- 50 XP por post
+      pontos_totais = pontos_totais + 10 -- 10 Coins por post
   where id = new.user_id;
   return new;
 end;
@@ -225,41 +220,45 @@ create trigger on_post_created
   after insert on public.posts
   for each row execute procedure public.handle_new_post();
 
--- Trigger: Novo Comentário
-create or replace function public.handle_new_comment()
+create or replace function public.handle_delete_post()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE
+set search_path = public
 as $$
 begin
   update public.users
-  set xp = xp + 10
-  where id = new.user_id;
-  return new;
+  set posts_count = greatest(0, posts_count - 1),
+      xp = greatest(0, xp - 50) -- Remove o XP se apagar o post
+  where id = old.user_id;
+  return old;
 end;
 $$;
 
-drop trigger if exists on_comment_created on public.comments;
-create trigger on_comment_created
-  after insert on public.comments
-  for each row execute procedure public.handle_new_comment();
+drop trigger if exists on_post_deleted on public.posts;
+create trigger on_post_deleted
+  after delete on public.posts
+  for each row execute procedure public.handle_delete_post();
 
--- Trigger: Novo Like
+-- 3.3 GESTÃO DE LIKES (LÓGICA ESTRITA)
+-- Trigger para QUANDO CURTE (Insert)
 create or replace function public.handle_new_like()
 returns trigger
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE
+set search_path = public
 as $$
 declare
   post_author_id uuid;
 begin
+  -- Busca o autor do post
   select user_id into post_author_id from public.posts where id = new.post_id;
+  
+  -- SÓ CONCEDE XP SE QUEM CURTIU NÃO FOR O DONO DO POST
   if post_author_id is not null and post_author_id != new.user_id then
     update public.users
     set likes_received = likes_received + 1,
-        xp = xp + 5
+        xp = xp + 5 -- 5 XP por like recebido de terceiros
     where id = post_author_id;
   end if;
   return new;
@@ -271,12 +270,62 @@ create trigger on_like_created
   after insert on public.likes
   for each row execute procedure public.handle_new_like();
 
--- RPC: Trending Topics
+-- Trigger para QUANDO DESCURTE (Delete)
+create or replace function public.handle_unlike()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  post_author_id uuid;
+begin
+  -- Busca o autor do post original
+  select user_id into post_author_id from public.posts where id = old.post_id;
+  
+  -- SÓ REMOVE XP SE QUEM DESCURTIU NÃO FOR O DONO DO POST
+  if post_author_id is not null and post_author_id != old.user_id then
+    update public.users
+    set likes_received = greatest(0, likes_received - 1),
+        xp = greatest(0, xp - 5) -- Remove os 5 XP ganhos anteriormente
+    where id = post_author_id;
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists on_like_deleted on public.likes;
+create trigger on_like_deleted
+  after delete on public.likes
+  for each row execute procedure public.handle_unlike();
+
+-- 3.4 GESTÃO DE COMENTÁRIOS
+create or replace function public.handle_new_comment()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- Quem comenta ganha XP (engajamento)
+  update public.users
+  set xp = xp + 10 -- 10 XP por comentar
+  where id = new.user_id;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_comment_created on public.comments;
+create trigger on_comment_created
+  after insert on public.comments
+  for each row execute procedure public.handle_new_comment();
+
+-- 3.5 RPC Trending Topics
 create or replace function public.get_trending_topics()
 returns table (tag text, count bigint)
 language plpgsql
 security definer
-set search_path = public -- IMPORTANTE
+set search_path = public
 as $$
 begin
   return query
