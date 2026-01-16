@@ -31,6 +31,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   const [processingImage, setProcessingImage] = useState(false);
   
+  // --- PROFILE MODAL STATE ---
+  const [selectedProfile, setSelectedProfile] = useState<User | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +50,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   useEffect(() => {
     // Atualiza posts em background
-    // NOTA: O storage.getPosts já ordena por 'created_at' DESC (Do mais recente para o mais antigo)
     fetchPosts(true);
 
     const channel = supabase.channel('feed-updates')
@@ -57,7 +60,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
              setPosts(current => current.filter(p => p.id !== payload.old.id));
          } else if (payload.eventType === 'INSERT') {
              if (payload.new.user_id !== user.id) {
-                 // Pequeno delay para garantir que o insert completo (com relações) esteja disponível
                  setTimeout(() => fetchPosts(true), 500);
              }
          }
@@ -77,6 +79,29 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
           console.error("Background fetch error", error);
       } finally {
           setLoadingPosts(false);
+      }
+  };
+
+  const handleProfileClick = async (userId: string) => {
+      setLoadingProfile(true);
+      try {
+          const profile = await storage.getUserById(userId);
+          if (profile) setSelectedProfile(profile);
+      } catch (e) {
+          console.error(e);
+      } finally {
+          setLoadingProfile(false);
+      }
+  };
+
+  const handleFollowFromModal = (targetId: string) => {
+      onFollow(targetId);
+      // Atualiza estado local do modal para refletir a mudança
+      if (selectedProfile && selectedProfile.id === targetId) {
+          // Nota: Isso é apenas visual dentro do modal
+          // A lógica real de atualização está no onFollow do pai
+          // Mas como o modal usa 'user' (que é o currentUser) para checar 'followingIds',
+          // a atualização do pai via onUpdateUser deve propagar e atualizar o botão corretamente.
       }
   };
 
@@ -114,7 +139,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             likedByMe: false
         };
 
-        // UI Optimistic Update: Adiciona no topo (Feed reverso)
         setPosts([optimisticPost, ...posts]);
         
         setNewPost('');
@@ -122,7 +146,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         setImagePreview(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
 
-        // Save Async
         await storage.savePost({
             userId: user.id,
             userName: user.name,
@@ -134,7 +157,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             id: '' 
         });
 
-        // XP Feedback
         const bonus = uploadedImageUrl ? 75 : 50;
         setXpAmount(bonus);
         setShowXpGain(true);
@@ -144,7 +166,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         storage.saveUser(updatedUser);
 
         setTimeout(() => setShowXpGain(false), 2000);
-        // Garante sincronia final
         setTimeout(() => fetchPosts(true), 1000);
 
     } catch (error) {
@@ -177,7 +198,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleLike = async (postId: string) => {
-    // Immediate UI feedback
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
@@ -222,7 +242,60 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   return (
-    <div className="w-full space-y-4 md:space-y-6 animate-fadeIn">
+    <div className="w-full space-y-4 md:space-y-6 animate-fadeIn relative">
+      {/* PROFILE POPUP MODAL */}
+      {selectedProfile && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-fadeIn" onClick={() => setSelectedProfile(null)}>
+            <div className="bg-white rounded-[32px] p-8 w-full max-w-sm apple-shadow relative flex flex-col items-center text-center" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setSelectedProfile(null)} className="absolute top-4 right-4 p-2 text-apple-tertiary hover:text-apple-text bg-apple-bg rounded-full">
+                    <Icons.X className="w-5 h-5" />
+                </button>
+                
+                <Avatar 
+                    name={selectedProfile.name} 
+                    bgColor={selectedProfile.avatarCor} 
+                    url={selectedProfile.avatarUrl} 
+                    size="xl" 
+                    className="mb-4 ring-4 ring-ejn-gold/20"
+                />
+                
+                <h3 className="text-xl font-bold text-apple-text">{selectedProfile.name}</h3>
+                <p className="text-xs text-ejn-medium font-bold uppercase tracking-widest mt-1">Nível {selectedProfile.nivel} • Aluno EJN</p>
+                
+                <p className="mt-4 text-sm text-apple-secondary leading-relaxed px-2">
+                    {selectedProfile.bio || "Este aluno ainda não adicionou uma biografia."}
+                </p>
+
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-4 w-full mt-6 py-4 border-y border-apple-bg">
+                    <div>
+                        <p className="font-bold text-apple-text">{selectedProfile.postsCount || 0}</p>
+                        <p className="text-[9px] text-apple-tertiary font-bold uppercase">Posts</p>
+                    </div>
+                    <div>
+                        <p className="font-bold text-apple-text">{selectedProfile.followersCount || 0}</p>
+                        <p className="text-[9px] text-apple-tertiary font-bold uppercase">Seguidores</p>
+                    </div>
+                    <div>
+                        <p className="font-bold text-apple-text">{selectedProfile.followingCount || 0}</p>
+                        <p className="text-[9px] text-apple-tertiary font-bold uppercase">Seguindo</p>
+                    </div>
+                </div>
+
+                {/* Follow Button */}
+                {user.id !== selectedProfile.id && (
+                    <button 
+                        onClick={() => handleFollowFromModal(selectedProfile.id)}
+                        disabled={user.followingIds.includes(selectedProfile.id)}
+                        className={`w-full mt-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest apple-transition ${user.followingIds.includes(selectedProfile.id) ? 'bg-apple-bg text-apple-tertiary cursor-default' : 'bg-ejn-dark text-white hover:bg-ejn-medium hover:scale-105 active:scale-95'}`}
+                    >
+                        {user.followingIds.includes(selectedProfile.id) ? 'Seguindo' : 'Seguir'}
+                    </button>
+                )}
+            </div>
+        </div>
+      )}
+
       {/* Create Post */}
       <div className="bg-white rounded-2xl p-4 md:p-6 apple-shadow relative">
         {showXpGain && (
@@ -282,10 +355,17 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
           posts.map((post) => (
             <div key={post.id} className="bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition animate-fadeIn relative">
                 <div className="flex items-center gap-3 mb-4">
-                  <Avatar name={post.userName} bgColor={post.avatarCor || 'bg-gray-400'} url={post.avatarUrl} size="xs" />
+                  <div className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => handleProfileClick(post.userId)}>
+                    <Avatar name={post.userName} bgColor={post.avatarCor || 'bg-gray-400'} url={post.avatarUrl} size="xs" />
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-apple-text text-sm truncate">{post.userName}</h4>
+                        <h4 
+                            className="font-bold text-apple-text text-sm truncate cursor-pointer hover:text-ejn-medium transition-colors"
+                            onClick={() => handleProfileClick(post.userId)}
+                        >
+                            {post.userName}
+                        </h4>
                         {user.id === post.userId && (
                           <div className="relative">
                             <button onClick={() => setOpenMenuId(openMenuId === post.id ? null : post.id)} className="p-1 hover:bg-apple-bg rounded-full">•••</button>
@@ -330,9 +410,16 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                   <div className="mt-4 pt-4 border-t border-apple-bg space-y-4">
                     {(post.comments || []).map(c => (
                       <div key={c.id} className="flex gap-3">
-                        <Avatar name={c.userName} bgColor={c.avatarCor} url={c.avatarUrl} size="xs" />
+                        <div className="cursor-pointer" onClick={() => handleProfileClick(c.userId)}>
+                            <Avatar name={c.userName} bgColor={c.avatarCor} url={c.avatarUrl} size="xs" />
+                        </div>
                         <div className="bg-apple-bg rounded-2xl px-4 py-2">
-                           <p className="text-[10px] font-bold">{c.userName}</p>
+                           <p 
+                                className="text-[10px] font-bold cursor-pointer hover:underline"
+                                onClick={() => handleProfileClick(c.userId)}
+                           >
+                                {c.userName}
+                           </p>
                            <p className="text-xs">{c.text}</p>
                         </div>
                       </div>

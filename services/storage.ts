@@ -55,9 +55,9 @@ const mapUser = (dbUser: any): User => ({
   likesReceived: dbUser.likes_received || 0,
   commentsCount: 0,
   streak: dbUser.streak || 0,
-  followersCount: 0, 
-  followingCount: 0,
-  followingIds: [], 
+  followersCount: dbUser.followersCount || 0, // Garante campo opcional mapeado
+  followingCount: dbUser.followingCount || 0,
+  followingIds: dbUser.followingIds || [], 
   status: dbUser.status as 'active' | 'suspended'
 });
 
@@ -87,6 +87,19 @@ export const storage = {
         console.error("Erro no upload:", error);
         throw error;
     }
+  },
+
+  // --- BUSCA ESPECÍFICA DE USUÁRIO (NOVO) ---
+  getUserById: async (id: string): Promise<User | null> => {
+    // 1. Tenta encontrar no cache de Ranking (Users) primeiro
+    const cachedUsers = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
+    const found = cachedUsers.find(u => u.id === id);
+    if (found) return found;
+
+    // 2. Se não achar, busca no banco
+    const { data, error } = await supabase.from('users').select('*').eq('id', id).single();
+    if (error || !data) return null;
+    return mapUser(data);
   },
 
   // --- MANTÉM OS DADOS DO USUÁRIO ---
