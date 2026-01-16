@@ -1,5 +1,4 @@
-
-import { User, Post, Mission, RewardItem, AppSettings, Comment } from '../types';
+import { User, Post, Mission, RewardItem, AppSettings, Comment, TrendingTopic } from '../types';
 import { supabase } from './supabase';
 
 // --- TURBO CACHE SYSTEM ---
@@ -9,7 +8,8 @@ const CACHE_KEYS = {
   USERS: 'ejn_ranking_cache',
   MISSIONS: 'ejn_missions_cache',
   REWARDS: 'ejn_rewards_cache',
-  SETTINGS: 'ejn_settings_cache'
+  SETTINGS: 'ejn_settings_cache',
+  TRENDING: 'ejn_trending_cache'
 };
 
 const localCache = {
@@ -195,6 +195,12 @@ export const storage = {
 
   addComment: async (postId: string, userId: string, content: string) => {
       await supabase.from('comments').insert({ post_id: postId, user_id: userId, content: content });
+  },
+
+  getTrending: async (): Promise<TrendingTopic[]> => {
+    const { data, error } = await supabase.rpc('get_trending_topics');
+    if (error) return [];
+    return data as TrendingTopic[];
   },
 
   // --- MISSIONS ---

@@ -3,6 +3,7 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
 import BottomNav from './components/BottomNav'; // Importando a nova barra
+import RightSidebar from './components/RightSidebar'; // Novo componente
 import ErrorBoundary from './components/ErrorBoundary';
 import { User, AppView } from './types';
 import { storage } from './services/storage';
@@ -144,6 +145,7 @@ const App: React.FC = () => {
     storage.getUsers().catch(() => {});
     storage.getMissions().catch(() => {});
     storage.getRewards().catch(() => {});
+    storage.getTrending().catch(() => {});
   };
 
   const handleLoginSuccess = (user: User) => {
@@ -275,21 +277,7 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {!isAdminView && (
-              <div className="hidden xl:block w-[300px] flex-shrink-0 space-y-6 lg:sticky lg:top-24">
-                <div className="bg-white rounded-2xl p-6 apple-shadow">
-                  <h4 className="font-bold text-apple-text text-sm mb-4">Trending</h4>
-                  <div className="space-y-4">
-                     {['#VendasB2B', '#SeedFunding', '#SaaS_Analytics'].map(tag => (
-                        <div key={tag} className="group flex items-center justify-between cursor-pointer hover:bg-apple-bg p-2 -mx-2 rounded-xl transition-all duration-300">
-                           <span className="text-xs font-bold text-ejn-medium group-hover:text-ejn-dark">{tag}</span>
-                           <span className="text-[10px] text-apple-tertiary font-bold">{Math.floor(Math.random()*2000)} posts</span>
-                        </div>
-                     ))}
-                  </div>
-                </div>
-              </div>
-            )}
+            {!isAdminView && <RightSidebar />}
           </div>
         </main>
       </div>

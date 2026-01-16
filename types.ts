@@ -6,15 +6,15 @@ export interface Comment {
   avatarCor: string;
   text: string;
   timestamp: string;
-  userId: string; // Adicionado para referência
+  userId: string;
 }
 
 export interface Post {
   id: string;
   userId: string;
   userName: string;
-  avatarUrl?: string; // Adicionado para facilitar renderização
-  avatarCor?: string; // Adicionado para facilitar renderização
+  avatarUrl?: string;
+  avatarCor?: string;
   content: string;
   timestamp: string;
   likes: number;
@@ -90,6 +90,11 @@ export interface AppSettings {
   xpPerComment: number;
   xpPerLikeReceived: number;
   coinsPerPost: number;
+}
+
+export interface TrendingTopic {
+  tag: string;
+  count: number;
 }
 
 export enum AuthView {
