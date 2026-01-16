@@ -1,7 +1,7 @@
 -- Habilita extensão para UUIDs
 create extension if not exists "uuid-ossp";
 
--- TABELA DE USUÁRIOS (Perfil Público)
+-- --- TABELA DE USUÁRIOS (Perfil Público) ---
 create table if not exists public.users (
   id uuid references auth.users on delete cascade not null primary key,
   email text,
@@ -24,8 +24,9 @@ create table if not exists public.users (
   status text default 'active', -- 'active' ou 'suspended'
   created_at timestamptz default now()
 );
+alter table public.users enable row level security;
 
--- TABELA DE POSTS
+-- --- TABELA DE POSTS ---
 create table if not exists public.posts (
   id uuid default uuid_generate_v4() primary key,
   user_id uuid references public.users(id) on delete cascade not null,
@@ -34,8 +35,9 @@ create table if not exists public.posts (
   is_pinned boolean default false,
   created_at timestamptz default now()
 );
+alter table public.posts enable row level security;
 
--- TABELA DE COMENTÁRIOS
+-- --- TABELA DE COMENTÁRIOS ---
 create table if not exists public.comments (
   id uuid default uuid_generate_v4() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -43,8 +45,9 @@ create table if not exists public.comments (
   content text not null,
   created_at timestamptz default now()
 );
+alter table public.comments enable row level security;
 
--- TABELA DE LIKES
+-- --- TABELA DE LIKES ---
 create table if not exists public.likes (
   id uuid default uuid_generate_v4() primary key,
   post_id uuid references public.posts(id) on delete cascade not null,
@@ -52,8 +55,9 @@ create table if not exists public.likes (
   created_at timestamptz default now(),
   unique(post_id, user_id) -- Impede like duplicado
 );
+alter table public.likes enable row level security;
 
--- TABELA DE MISSÕES
+-- --- TABELA DE MISSÕES ---
 create table if not exists public.missions (
   id uuid default uuid_generate_v4() primary key,
   title text not null,
@@ -65,8 +69,9 @@ create table if not exists public.missions (
   is_active boolean default true,
   created_at timestamptz default now()
 );
+alter table public.missions enable row level security;
 
--- TABELA DE RECOMPENSAS (LOJA)
+-- --- TABELA DE RECOMPENSAS (LOJA) ---
 create table if not exists public.rewards (
   id uuid default uuid_generate_v4() primary key,
   title text not null,
@@ -79,16 +84,18 @@ create table if not exists public.rewards (
   category text default 'Produto',
   created_at timestamptz default now()
 );
+alter table public.rewards enable row level security;
 
--- TABELA DE SEGUIDORES
+-- --- TABELA DE SEGUIDORES ---
 create table if not exists public.follows (
   follower_id uuid references public.users(id) on delete cascade not null,
   following_id uuid references public.users(id) on delete cascade not null,
   created_at timestamptz default now(),
   primary key (follower_id, following_id)
 );
+alter table public.follows enable row level security;
 
--- TABELA DE CONFIGURAÇÕES GLOBAIS
+-- --- TABELA DE CONFIGURAÇÕES GLOBAIS ---
 create table if not exists public.settings (
   id int primary key default 1,
   platform_name text default 'Rede Social EJN',
@@ -98,54 +105,86 @@ create table if not exists public.settings (
   coins_per_post int default 10,
   constraint single_row check (id = 1)
 );
+alter table public.settings enable row level security;
 
--- Inserir configuração padrão
+-- Inserir configuração padrão se não existir
 insert into public.settings (id) values (1) on conflict do nothing;
 
+-- =========================================================
 -- ROW LEVEL SECURITY (RLS) - POLÍTICAS DE SEGURANÇA
+-- =========================================================
 
--- Users
-alter table public.users enable row level security;
+-- USERS
+drop policy if exists "Perfis são públicos" on public.users;
 create policy "Perfis são públicos" on public.users for select using (true);
+
+drop policy if exists "Usuário edita próprio perfil" on public.users;
 create policy "Usuário edita próprio perfil" on public.users for update using (auth.uid() = id);
+
+drop policy if exists "Usuário insere próprio perfil" on public.users;
 create policy "Usuário insere próprio perfil" on public.users for insert with check (auth.uid() = id);
 
--- Posts
-alter table public.posts enable row level security;
+-- POSTS
+drop policy if exists "Posts são públicos" on public.posts;
 create policy "Posts são públicos" on public.posts for select using (true);
+
+drop policy if exists "Usuários autenticados postam" on public.posts;
 create policy "Usuários autenticados postam" on public.posts for insert with check (auth.role() = 'authenticated');
+
+drop policy if exists "Dono edita post" on public.posts;
 create policy "Dono edita post" on public.posts for update using (auth.uid() = user_id);
+
+drop policy if exists "Dono deleta post" on public.posts;
 create policy "Dono deleta post" on public.posts for delete using (auth.uid() = user_id);
 
--- Comments
-alter table public.comments enable row level security;
+-- COMMENTS
+drop policy if exists "Comentários públicos" on public.comments;
 create policy "Comentários públicos" on public.comments for select using (true);
+
+drop policy if exists "Autenticados comentam" on public.comments;
 create policy "Autenticados comentam" on public.comments for insert with check (auth.role() = 'authenticated');
 
--- Likes
-alter table public.likes enable row level security;
+-- LIKES
+drop policy if exists "Likes públicos" on public.likes;
 create policy "Likes públicos" on public.likes for select using (true);
+
+drop policy if exists "Autenticados dão like" on public.likes;
 create policy "Autenticados dão like" on public.likes for insert with check (auth.role() = 'authenticated');
+
+drop policy if exists "Dono remove like" on public.likes;
 create policy "Dono remove like" on public.likes for delete using (auth.uid() = user_id);
 
--- Missions & Rewards
-alter table public.missions enable row level security;
+-- MISSIONS
+drop policy if exists "Ver missões" on public.missions;
 create policy "Ver missões" on public.missions for select using (true);
-create policy "Gestão de missões" on public.missions for all using (true);
 
-alter table public.rewards enable row level security;
+drop policy if exists "Gestão de missões" on public.missions;
+create policy "Gestão de missões" on public.missions for all using (auth.role() = 'authenticated');
+
+-- REWARDS
+drop policy if exists "Ver recompensas" on public.rewards;
 create policy "Ver recompensas" on public.rewards for select using (true);
-create policy "Gestão de recompensas" on public.rewards for all using (true);
 
-alter table public.settings enable row level security;
+drop policy if exists "Gestão de recompensas" on public.rewards;
+create policy "Gestão de recompensas" on public.rewards for all using (auth.role() = 'authenticated');
+
+-- SETTINGS
+drop policy if exists "Ver settings" on public.settings;
 create policy "Ver settings" on public.settings for select using (true);
-create policy "Gestão settings" on public.settings for all using (true);
 
-alter table public.follows enable row level security;
+drop policy if exists "Gestão settings" on public.settings;
+create policy "Gestão settings" on public.settings for all using (auth.role() = 'authenticated');
+
+-- FOLLOWS
+drop policy if exists "Ver follows" on public.follows;
 create policy "Ver follows" on public.follows for select using (true);
+
+drop policy if exists "Gerenciar follows" on public.follows;
 create policy "Gerenciar follows" on public.follows for all using (auth.uid() = follower_id);
 
--- TRIGGERS PARA COUNTERS
+-- =========================================================
+-- TRIGGERS
+-- =========================================================
 
 -- Função para contar posts
 create or replace function public.handle_new_post() 
@@ -179,7 +218,6 @@ create trigger on_like_created
   for each row execute procedure public.handle_new_like();
 
 -- !!! CRÍTICO: TRIGGER DE CRIAÇÃO AUTOMÁTICA DE PERFIL !!!
--- Garante que o usuário exista na tabela users ao criar conta no Auth
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
