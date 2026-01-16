@@ -49,7 +49,6 @@ create table if not exists public.likes (
   unique(post_id, user_id)
 );
 
--- Demais tabelas auxiliares
 create table if not exists public.follows (
   id uuid default gen_random_uuid() primary key,
   follower_id uuid references public.users(id) on delete cascade not null,
@@ -57,6 +56,7 @@ create table if not exists public.follows (
   created_at timestamptz default now(),
   unique(follower_id, following_id)
 );
+
 create table if not exists public.missions (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -68,6 +68,7 @@ create table if not exists public.missions (
   is_active boolean default true,
   created_at timestamptz default now()
 );
+
 create table if not exists public.rewards (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -80,6 +81,18 @@ create table if not exists public.rewards (
   category text default 'Produto',
   created_at timestamptz default now()
 );
+
+-- NOVA TABELA: Registro de Resgates (Claims)
+create table if not exists public.reward_claims (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.users(id) on delete cascade not null,
+  reward_id uuid references public.rewards(id) on delete set null,
+  reward_title text, -- Cópia estática caso o prêmio seja deletado
+  cost_paid int,
+  status text default 'pending', -- pending, delivered
+  created_at timestamptz default now()
+);
+
 create table if not exists public.settings (
   id int primary key default 1,
   platform_name text default 'Instituto EJN',
@@ -99,9 +112,10 @@ alter table public.likes enable row level security;
 alter table public.follows enable row level security;
 alter table public.missions enable row level security;
 alter table public.rewards enable row level security;
+alter table public.reward_claims enable row level security;
 alter table public.settings enable row level security;
 
--- Recria policies para garantir acesso correto
+-- Policies Recriadas
 drop policy if exists "Users - Leitura Pública" on public.users;
 create policy "Users - Leitura Pública" on public.users for select using (true);
 drop policy if exists "Users - Update Próprio" on public.users;
@@ -147,16 +161,22 @@ create policy "Rewards - Leitura" on public.rewards for select using (true);
 drop policy if exists "Rewards - Gestão Admin" on public.rewards;
 create policy "Rewards - Gestão Admin" on public.rewards for all using (public.is_admin());
 
+drop policy if exists "Claims - Leitura Própria ou Admin" on public.reward_claims;
+create policy "Claims - Leitura Própria ou Admin" on public.reward_claims for select using (auth.uid() = user_id or public.is_admin());
+drop policy if exists "Claims - Insert Autenticado" on public.reward_claims;
+create policy "Claims - Insert Autenticado" on public.reward_claims for insert with check (auth.uid() = user_id);
+drop policy if exists "Claims - Update Admin" on public.reward_claims;
+create policy "Claims - Update Admin" on public.reward_claims for update using (public.is_admin());
+
 drop policy if exists "Settings - Leitura" on public.settings;
 create policy "Settings - Leitura" on public.settings for select using (true);
 drop policy if exists "Settings - Gestão Admin" on public.settings;
 create policy "Settings - Gestão Admin" on public.settings for all using (public.is_admin());
 
 -- =========================================================
--- 3. TRIGGERS E LÓGICA DE GAMIFICAÇÃO (CORRIGIDOS)
+-- 3. FUNÇÕES E TRIGGERS
 -- =========================================================
 
--- Função para verificar Admin
 create or replace function public.is_admin()
 returns boolean
 language plpgsql
@@ -171,7 +191,6 @@ begin
 end;
 $$;
 
--- 3.1 GESTÃO DE USUÁRIOS
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -198,7 +217,7 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- 3.2 GESTÃO DE POSTS
+-- Trigger Posts
 create or replace function public.handle_new_post()
 returns trigger
 language plpgsql
@@ -208,8 +227,8 @@ as $$
 begin
   update public.users
   set posts_count = posts_count + 1,
-      xp = xp + 50, -- 50 XP por post
-      pontos_totais = pontos_totais + 10 -- 10 Coins por post
+      xp = xp + 50,
+      pontos_totais = pontos_totais + 10
   where id = new.user_id;
   return new;
 end;
@@ -229,19 +248,17 @@ as $$
 begin
   update public.users
   set posts_count = greatest(0, posts_count - 1),
-      xp = greatest(0, xp - 50) -- Remove o XP se apagar o post
+      xp = greatest(0, xp - 50)
   where id = old.user_id;
   return old;
 end;
 $$;
-
 drop trigger if exists on_post_deleted on public.posts;
 create trigger on_post_deleted
   after delete on public.posts
   for each row execute procedure public.handle_delete_post();
 
--- 3.3 GESTÃO DE LIKES (LÓGICA ESTRITA)
--- Trigger para QUANDO CURTE (Insert)
+-- Trigger Likes
 create or replace function public.handle_new_like()
 returns trigger
 language plpgsql
@@ -251,26 +268,21 @@ as $$
 declare
   post_author_id uuid;
 begin
-  -- Busca o autor do post
   select user_id into post_author_id from public.posts where id = new.post_id;
-  
-  -- SÓ CONCEDE XP SE QUEM CURTIU NÃO FOR O DONO DO POST
   if post_author_id is not null and post_author_id != new.user_id then
     update public.users
     set likes_received = likes_received + 1,
-        xp = xp + 5 -- 5 XP por like recebido de terceiros
+        xp = xp + 5
     where id = post_author_id;
   end if;
   return new;
 end;
 $$;
-
 drop trigger if exists on_like_created on public.likes;
 create trigger on_like_created
   after insert on public.likes
   for each row execute procedure public.handle_new_like();
 
--- Trigger para QUANDO DESCURTE (Delete)
 create or replace function public.handle_unlike()
 returns trigger
 language plpgsql
@@ -280,26 +292,22 @@ as $$
 declare
   post_author_id uuid;
 begin
-  -- Busca o autor do post original
   select user_id into post_author_id from public.posts where id = old.post_id;
-  
-  -- SÓ REMOVE XP SE QUEM DESCURTIU NÃO FOR O DONO DO POST
   if post_author_id is not null and post_author_id != old.user_id then
     update public.users
     set likes_received = greatest(0, likes_received - 1),
-        xp = greatest(0, xp - 5) -- Remove os 5 XP ganhos anteriormente
+        xp = greatest(0, xp - 5)
     where id = post_author_id;
   end if;
   return old;
 end;
 $$;
-
 drop trigger if exists on_like_deleted on public.likes;
 create trigger on_like_deleted
   after delete on public.likes
   for each row execute procedure public.handle_unlike();
 
--- 3.4 GESTÃO DE COMENTÁRIOS
+-- Trigger Comments
 create or replace function public.handle_new_comment()
 returns trigger
 language plpgsql
@@ -307,20 +315,18 @@ security definer
 set search_path = public
 as $$
 begin
-  -- Quem comenta ganha XP (engajamento)
   update public.users
-  set xp = xp + 10 -- 10 XP por comentar
+  set xp = xp + 10
   where id = new.user_id;
   return new;
 end;
 $$;
-
 drop trigger if exists on_comment_created on public.comments;
 create trigger on_comment_created
   after insert on public.comments
   for each row execute procedure public.handle_new_comment();
 
--- 3.5 RPC Trending Topics
+-- RPC Trending
 create or replace function public.get_trending_topics()
 returns table (tag text, count bigint)
 language plpgsql
@@ -340,6 +346,55 @@ begin
 end;
 $$;
 
+-- 3.6 RPC: TRANSAÇÃO DE RESGATE (ATÔMICA)
+-- Esta função garante que não haja race condition no estoque
+create or replace function public.claim_reward(p_reward_id uuid, p_user_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_reward record;
+  v_user_balance int;
+begin
+  -- 1. Bloqueia a linha do prêmio para leitura/escrita
+  select * into v_reward from public.rewards where id = p_reward_id for update;
+  
+  if not found then
+    return json_build_object('success', false, 'message', 'Prêmio não encontrado');
+  end if;
+
+  if v_reward.stock <= 0 then
+    return json_build_object('success', false, 'message', 'Estoque esgotado');
+  end if;
+
+  -- 2. Verifica saldo do usuário
+  select pontos_totais into v_user_balance from public.users where id = p_user_id;
+  
+  if v_user_balance < v_reward.cost then
+    return json_build_object('success', false, 'message', 'Saldo insuficiente');
+  end if;
+
+  -- 3. Executa a transação
+  -- Deduz saldo
+  update public.users 
+  set pontos_totais = pontos_totais - v_reward.cost
+  where id = p_user_id;
+
+  -- Deduz estoque
+  update public.rewards
+  set stock = stock - 1
+  where id = p_reward_id;
+
+  -- Registra claim
+  insert into public.reward_claims (user_id, reward_id, reward_title, cost_paid, status)
+  values (p_user_id, p_reward_id, v_reward.title, v_reward.cost, 'pending');
+
+  return json_build_object('success', true, 'message', 'Resgate realizado com sucesso!');
+end;
+$$;
+
 -- =========================================================
 -- 4. STORAGE
 -- =========================================================
@@ -349,12 +404,9 @@ on conflict (id) do nothing;
 
 drop policy if exists "Imagens são públicas" on storage.objects;
 create policy "Imagens são públicas" on storage.objects for select using ( bucket_id = 'media' );
-
 drop policy if exists "Upload de imagens" on storage.objects;
 create policy "Upload de imagens" on storage.objects for insert with check ( bucket_id = 'media' and auth.role() = 'authenticated' );
-
 drop policy if exists "Update imagens" on storage.objects;
 create policy "Update imagens" on storage.objects for update using ( bucket_id = 'media' and auth.uid() = owner );
-
 drop policy if exists "Delete imagens" on storage.objects;
 create policy "Delete imagens" on storage.objects for delete using ( bucket_id = 'media' and auth.uid() = owner );

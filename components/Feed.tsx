@@ -95,14 +95,21 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleFollowFromModal = (targetId: string) => {
+      if (!selectedProfile) return;
+
+      const isFollowing = user.followingIds.includes(targetId);
+      
+      // 1. Atualização Otimista no Modal (Instantânea)
+      setSelectedProfile(prev => {
+          if (!prev) return null;
+          return {
+              ...prev,
+              followersCount: isFollowing ? Math.max(0, prev.followersCount - 1) : prev.followersCount + 1
+          };
+      });
+
+      // 2. Dispara lógica global
       onFollow(targetId);
-      // Atualiza estado local do modal para refletir a mudança
-      if (selectedProfile && selectedProfile.id === targetId) {
-          // Nota: Isso é apenas visual dentro do modal
-          // A lógica real de atualização está no onFollow do pai
-          // Mas como o modal usa 'user' (que é o currentUser) para checar 'followingIds',
-          // a atualização do pai via onUpdateUser deve propagar e atualizar o botão corretamente.
-      }
   };
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -286,10 +293,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 {user.id !== selectedProfile.id && (
                     <button 
                         onClick={() => handleFollowFromModal(selectedProfile.id)}
-                        disabled={user.followingIds.includes(selectedProfile.id)}
-                        className={`w-full mt-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest apple-transition ${user.followingIds.includes(selectedProfile.id) ? 'bg-apple-bg text-apple-tertiary cursor-default' : 'bg-ejn-dark text-white hover:bg-ejn-medium hover:scale-105 active:scale-95'}`}
+                        // O disabled foi removido para permitir toggle (seguir/deixar de seguir)
+                        className={`w-full mt-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest apple-transition ${user.followingIds.includes(selectedProfile.id) ? 'bg-apple-bg text-apple-tertiary' : 'bg-ejn-dark text-white hover:bg-ejn-medium hover:scale-105 active:scale-95'}`}
                     >
-                        {user.followingIds.includes(selectedProfile.id) ? 'Seguindo' : 'Seguir'}
+                        {user.followingIds.includes(selectedProfile.id) ? 'Deixar de Seguir' : 'Seguir'}
                     </button>
                 )}
             </div>

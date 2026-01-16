@@ -11,11 +11,12 @@ interface AdminPanelProps {
 }
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
-  const [subView, setSubView] = useState<AdminSubView>('DASHBOARD');
+  const [subView, setSubView] = useState<AdminSubView | 'CLAIMS'>('DASHBOARD');
   const [users, setUsers] = useState<User[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [rewards, setRewards] = useState<RewardItem[]>([]);
+  const [claims, setClaims] = useState<any[]>([]); // Nova lista de reivindicações
   const [settings, setSettings] = useState<AppSettings>({
       platformName: 'Instituto EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10
   });
@@ -36,12 +37,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
 
   useEffect(() => { 
     loadData(); 
-    const timer = setTimeout(() => {
-        if (loadingData) {
-            setLoadingData(false);
-        }
-    }, 8000);
-    return () => clearTimeout(timer);
   }, []);
 
   const loadData = async () => {
@@ -52,12 +47,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
       const m = await storage.getMissions().catch(() => []);
       const r = await storage.getRewards().catch(() => []);
       const s = await storage.getSettings().catch(() => settings);
+      const c = await storage.getClaims().catch(() => []); // Carrega claims
 
       setUsers(u); 
       setPosts(p); 
       setMissions(m); 
       setRewards(r); 
       setSettings(s);
+      setClaims(c);
     } catch (e) {
       showToast("Erro na sincronização cloud", "error");
     } finally {
@@ -76,15 +73,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
       await action();
     } catch (e: any) {
       console.error("Erro na ação do Admin:", e);
-      // Exibe a mensagem de erro real do Supabase para diagnóstico
       const errorMsg = e.message || "Ação negada pelo servidor";
-      showToast(errorMsg.includes('foreign key') ? "Erro: Usuário possui dados vinculados (posts/likes)." : errorMsg, "error");
+      showToast(errorMsg.includes('foreign key') ? "Erro: Dados vinculados." : errorMsg, "error");
     } finally {
       setLoadingAction(null);
     }
   };
 
-  // --- USUÁRIOS ---
+  // --- Ações Existentes (Manter lógica) ---
   const handleUpdateUser = async (u: User) => {
     await wrapAction(u.id, async () => {
         await storage.saveUser(u);
@@ -95,23 +91,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
   };
 
   const handleDeleteUser = async (id: string) => {
-    if (id === currentUser.id) {
-        showToast("Você não pode excluir sua própria conta administrativa.", "error");
-        return;
-    }
-
-    if (confirm('ATENÇÃO: Deseja excluir este membro permanentemente? Esta ação pode falhar se o usuário tiver publicações ou curtidas ativas.')) {
+    if (id === currentUser.id) { showToast("Erro: auto-exclusão.", "error"); return; }
+    if (confirm('ATENÇÃO: Deseja excluir este membro permanentemente?')) {
         await wrapAction(id, async () => {
             await storage.deleteUser(id);
             setUsers(prev => prev.filter(u => u.id !== id));
-            showToast('Membro removido da base de dados.');
+            showToast('Membro removido.');
         });
     }
   };
 
-  // --- POSTS ---
   const handleDeletePost = async (id: string) => {
-    if (confirm('Remover publicação do feed?')) {
+    if (confirm('Remover post?')) {
         await wrapAction(id, async () => {
             await storage.deletePost(id);
             setPosts(prev => prev.filter(p => p.id !== id));
@@ -120,21 +111,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
     }
   };
 
-  // --- MISSÕES ---
-  const handleOpenMissionModal = (mission?: Mission) => {
-      if (mission) { setEditingMission(mission); setMissionForm({ ...mission }); }
-      else { setEditingMission(null); setMissionForm({ title: '', desc: '', rewardXP: 100, rewardCoins: 50, isActive: true, type: 'daily', icon: '🎯' }); }
-      setShowMissionModal(true);
-  };
-
   const handleSaveMission = async () => {
-    if (!missionForm.title || !missionForm.desc) {
-      showToast("Preencha título e descrição", "error");
-      return;
-    }
+    if (!missionForm.title) return;
     const mission: Mission = {
       id: editingMission?.id || '',
-      title: missionForm.title!, desc: missionForm.desc!,
+      title: missionForm.title!, desc: missionForm.desc || '',
       rewardXP: Number(missionForm.rewardXP || 0), rewardCoins: Number(missionForm.rewardCoins || 0),
       icon: missionForm.icon || '🎯', type: (missionForm.type as any) || 'daily', isActive: missionForm.isActive ?? true
     };
@@ -142,24 +123,17 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
         await storage.saveMission(mission);
         await loadData();
         setShowMissionModal(false);
-        showToast('Missão salva no banco.');
+        showToast('Missão salva.');
     });
   };
 
   const handleDeleteMission = async (id: string) => {
-      if(!confirm('Excluir esta missão globalmente?')) return;
+      if(!confirm('Excluir missão?')) return;
       await wrapAction(id, async () => {
           await storage.deleteMission(id);
           setMissions(prev => prev.filter(m => m.id.toString() !== id.toString()));
           showToast('Missão removida.');
       });
-  };
-
-  // --- RECOMPENSAS ---
-  const handleOpenRewardModal = (reward?: RewardItem) => {
-      if (reward) { setEditingReward(reward); setRewardForm({ ...reward }); }
-      else { setEditingReward(null); setRewardForm({ title: '', desc: '', cost: 500, stock: 10, category: 'Produto', icon: '🎁', imageUrl: 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=400' }); }
-      setShowRewardModal(true);
   };
 
   const handleSaveReward = async () => {
@@ -174,24 +148,47 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
         await storage.saveReward(reward);
         await loadData();
         setShowRewardModal(false);
-        showToast('Inventário atualizado.');
+        showToast('Estoque atualizado.');
     });
   };
 
   const handleDeleteReward = async (id: string) => {
-      if(!confirm('Deseja realmente remover este item do estoque?')) return;
+      if(!confirm('Remover item?')) return;
       await wrapAction(id, async () => {
           await storage.deleteReward(id);
           setRewards(prev => prev.filter(r => r.id.toString() !== id.toString()));
-          showToast('Item removido com sucesso.');
+          showToast('Item removido.');
       });
   };
 
   const handleSaveSettings = async () => {
       await wrapAction('settings-save', async () => {
           await storage.saveSettings(settings);
-          showToast('Configurações globais salvas.');
+          showToast('Configurações salvas.');
       });
+  };
+
+  // Added handlers
+  const handleOpenMissionModal = (mission?: Mission) => {
+    if (mission) {
+      setEditingMission(mission);
+      setMissionForm({ ...mission });
+    } else {
+      setEditingMission(null);
+      setMissionForm({ isActive: true, type: 'daily', icon: '🎯' });
+    }
+    setShowMissionModal(true);
+  };
+
+  const handleOpenRewardModal = (reward?: RewardItem) => {
+    if (reward) {
+      setEditingReward(reward);
+      setRewardForm({ ...reward });
+    } else {
+      setEditingReward(null);
+      setRewardForm({ category: 'Produto', stock: 10, icon: '🎁' });
+    }
+    setShowRewardModal(true);
   };
 
   const filteredUsers = users.filter(u => {
@@ -229,11 +226,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
             { id: 'POSTS', label: 'Posts', icon: '📝' },
             { id: 'MISSIONS_MGMT', label: 'Missões', icon: '🎯' },
             { id: 'REWARDS_MGMT', label: 'Brindes', icon: '🎁' },
+            { id: 'CLAIMS', label: 'Entregas', icon: '🚚' }, // Nova opção
             { id: 'SETTINGS', label: 'Ajustes', icon: '⚙️' },
           ].map(item => (
             <button
               key={item.id}
-              onClick={() => setSubView(item.id as AdminSubView)}
+              onClick={() => setSubView(item.id as any)}
               className={`flex-shrink-0 lg:w-full text-left px-5 py-3 rounded-2xl text-sm font-bold flex items-center gap-3 apple-transition ${subView === item.id ? 'bg-ejn-gold text-ejn-dark shadow-md' : 'bg-white text-apple-secondary hover:bg-apple-bg hover:text-apple-text'}`}
             >
               <span>{item.icon}</span> <span className="hidden md:inline">{item.label}</span>
@@ -247,9 +245,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               { label: 'Alunos Ativos', val: users.filter(u => u.status !== 'suspended').length, icon: '👥', color: 'text-blue-500' },
-              { label: 'Publicações', val: posts.length, icon: '🔥', color: 'text-orange-500' },
+              { label: 'Resgates Pendentes', val: claims.filter(c => c.status === 'pending').length, icon: '📦', color: 'text-red-500' },
               { label: 'Pontos Circulando', val: users.reduce((a, b) => a + (b.pontosTotais || 0), 0), icon: '🪙', color: 'text-ejn-gold' },
-              { label: 'Desafios Ativos', val: missions.filter(m => m.isActive).length, icon: '🎯', color: 'text-ejn-medium' },
+              { label: 'Estoque Total', val: rewards.reduce((a,b) => a + b.stock, 0), icon: '🎁', color: 'text-ejn-medium' },
             ].map((c, i) => (
               <div key={i} className="bg-white p-6 rounded-[32px] apple-shadow">
                 <h3 className={`text-2xl font-black ${c.color}`}>{c.val.toLocaleString()}</h3>
@@ -259,8 +257,50 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
           </div>
         )}
 
+        {/* LISTA DE REIVINDICAÇÕES (NOVA) */}
+        {subView === 'CLAIMS' && (
+           <div className="bg-white rounded-[32px] apple-shadow overflow-hidden">
+               <div className="p-8 border-b border-apple-bg flex justify-between items-center">
+                  <h3 className="font-black text-sm uppercase">Fila de Entregas</h3>
+                  <button onClick={loadData} className="text-xs font-bold text-ejn-medium">↻ Atualizar</button>
+               </div>
+               <div className="overflow-x-auto">
+                <table className="w-full text-left min-w-[600px]">
+                   <thead className="bg-apple-bg text-[10px] font-black uppercase text-apple-tertiary tracking-widest">
+                       <tr>
+                           <th className="px-6 py-3">Aluno</th>
+                           <th className="px-6 py-3">Item Resgatado</th>
+                           <th className="px-6 py-3">Valor</th>
+                           <th className="px-6 py-3">Data</th>
+                           <th className="px-6 py-3">Status</th>
+                       </tr>
+                   </thead>
+                   <tbody className="divide-y divide-apple-bg">
+                       {claims.map(c => (
+                           <tr key={c.id} className="hover:bg-apple-bg/30">
+                               <td className="px-6 py-4 font-bold text-sm text-apple-text">{c.users?.name || 'Desconhecido'}</td>
+                               <td className="px-6 py-4 font-bold text-ejn-dark">{c.reward_title || 'Item Removido'}</td>
+                               <td className="px-6 py-4 text-xs font-bold text-ejn-gold">{c.cost_paid} Coins</td>
+                               <td className="px-6 py-4 text-xs text-apple-secondary">{new Date(c.created_at).toLocaleDateString()}</td>
+                               <td className="px-6 py-4">
+                                   <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${c.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                                       {c.status === 'pending' ? 'Pendente' : 'Entregue'}
+                                   </span>
+                               </td>
+                           </tr>
+                       ))}
+                       {claims.length === 0 && (
+                           <tr><td colSpan={5} className="p-8 text-center text-apple-secondary text-xs">Nenhum resgate registrado ainda.</td></tr>
+                       )}
+                   </tbody>
+                </table>
+               </div>
+           </div>
+        )}
+
         {subView === 'USERS' && (
           <div className="bg-white rounded-[32px] apple-shadow overflow-hidden">
+             {/* ... (Manter código existente da tabela de usuários) ... */}
              <div className="p-8 border-b border-apple-bg flex flex-col md:flex-row justify-between items-center gap-4">
                 <h3 className="font-black text-sm uppercase">Base de Membros ({filteredUsers.length})</h3>
                 <div className="flex flex-wrap gap-2 justify-center">
@@ -302,7 +342,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
                                 onClick={() => handleDeleteUser(u.id)} 
                                 disabled={loadingAction === u.id || u.id === currentUser.id}
                                 className={`p-2.5 rounded-xl apple-transition shadow-sm ${u.id === currentUser.id ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : 'bg-apple-bg hover:bg-red-600 hover:text-white'}`}
-                                title={u.id === currentUser.id ? "Você não pode excluir a si mesmo" : "Excluir Permanentemente"}
                               >
                                 {loadingAction === u.id ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : '🗑️'}
                               </button>
@@ -387,6 +426,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
                                 className="w-full h-full object-cover" 
                                 onError={(e) => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=400'; }}
                               />
+                              <div className="absolute top-2 right-2 bg-ejn-dark text-white text-[10px] font-bold px-2 py-1 rounded-md">
+                                  Estoque: {r.stock}
+                              </div>
                            </div>
                            <h4 className="font-bold text-sm truncate">{r.title}</h4>
                            <p className="text-[10px] text-apple-secondary font-bold uppercase">{r.cost} EJN Coins</p>
@@ -478,7 +520,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
                 <h3 className="font-black text-lg uppercase mb-6">{editingReward ? 'Ajustar Brinde' : 'Inserir no Estoque'}</h3>
                 <div className="space-y-4">
                     <input type="text" placeholder="Nome do Produto/Serviço" className="w-full bg-apple-bg p-4 rounded-xl font-bold" value={rewardForm.title || ''} onChange={e => setRewardForm({...rewardForm, title: e.target.value})} />
-                    <input type="number" placeholder="Preço de Resgate (EJN Coins)" className="w-full bg-apple-bg p-4 rounded-xl font-bold" value={rewardForm.cost || ''} onChange={e => setRewardForm({...rewardForm, cost: Number(e.target.value)})} />
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-bold uppercase text-apple-tertiary">Preço (Coins)</label>
+                            <input type="number" className="w-full bg-apple-bg p-4 rounded-xl font-bold" value={rewardForm.cost || ''} onChange={e => setRewardForm({...rewardForm, cost: Number(e.target.value)})} />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-bold uppercase text-apple-tertiary">Estoque Inicial</label>
+                            <input type="number" className="w-full bg-apple-bg p-4 rounded-xl font-bold" value={rewardForm.stock || ''} onChange={e => setRewardForm({...rewardForm, stock: Number(e.target.value)})} />
+                        </div>
+                    </div>
                     <input type="text" placeholder="URL da Imagem" className="w-full bg-apple-bg p-4 rounded-xl text-xs font-medium" value={rewardForm.imageUrl || ''} onChange={e => setRewardForm({...rewardForm, imageUrl: e.target.value})} />
                     <button onClick={handleSaveReward} className="w-full bg-ejn-dark text-white py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-gold hover:text-ejn-dark">Salvar Item</button>
                 </div>

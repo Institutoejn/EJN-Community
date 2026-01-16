@@ -55,7 +55,7 @@ const mapUser = (dbUser: any): User => ({
   likesReceived: dbUser.likes_received || 0,
   commentsCount: 0,
   streak: dbUser.streak || 0,
-  followersCount: dbUser.followersCount || 0, // Garante campo opcional mapeado
+  followersCount: dbUser.followersCount || 0, 
   followingCount: dbUser.followingCount || 0,
   followingIds: dbUser.followingIds || [], 
   status: dbUser.status as 'active' | 'suspended'
@@ -72,59 +72,69 @@ export const storage = {
 
   uploadImage: async (file: File, path: string): Promise<string> => {
     try {
+        // Validação básica
+        if (!file) throw new Error("Arquivo inválido");
+        if (file.size > 5 * 1024 * 1024) throw new Error("Imagem muito grande (Max 5MB)");
+
         const fileExt = file.name.split('.').pop();
-        const fileName = `${path}/${Date.now()}.${fileExt}`;
+        // Nome único com timestamp e random string para evitar colisões
+        const fileName = `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
         
+        // Upsert true garante que não falha se existir algo com mesmo nome (improvável)
         const { error: uploadError } = await supabase.storage
             .from('media')
-            .upload(fileName, file, { upsert: true });
+            .upload(fileName, file, { upsert: true, cacheControl: '3600' });
 
-        if (uploadError) throw uploadError;
+        if (uploadError) {
+             console.error("Supabase Upload Error:", uploadError);
+             throw uploadError;
+        }
 
         const { data } = supabase.storage.from('media').getPublicUrl(fileName);
         return data.publicUrl;
     } catch (error) {
-        console.error("Erro no upload:", error);
-        throw error;
+        console.error("Erro crítico no upload:", error);
+        throw new Error("Falha ao enviar imagem. Verifique sua conexão.");
     }
   },
 
-  // --- BUSCA ESPECÍFICA DE USUÁRIO (NOVO) ---
   getUserById: async (id: string): Promise<User | null> => {
-    // 1. Tenta encontrar no cache de Ranking (Users) primeiro
     const cachedUsers = localCache.get<User[]>(CACHE_KEYS.USERS) || [];
     const found = cachedUsers.find(u => u.id === id);
     if (found) return found;
 
-    // 2. Se não achar, busca no banco
     const { data, error } = await supabase.from('users').select('*').eq('id', id).single();
     if (error || !data) return null;
-    return mapUser(data);
+    
+    // Busca dados sociais extras para o popup
+    const [following, followers] = await Promise.all([
+        supabase.from('follows').select('following_id').eq('follower_id', id),
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', id)
+    ]);
+    
+    const mapped = mapUser(data);
+    mapped.followingCount = following.data?.length || 0;
+    mapped.followersCount = followers.count || 0;
+    
+    return mapped;
   },
 
-  // --- MANTÉM OS DADOS DO USUÁRIO ---
   getCurrentUser: async (skipNetwork = false): Promise<User | null> => {
     try {
-        // 1. Tenta Cache Imediato se solicitado
         if (skipNetwork) {
             const cached = localCache.get<User>(CACHE_KEYS.USER);
             if (cached) return cached;
         }
-
-        // 2. Verifica Sessão
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError || !session) return null;
 
-        // 3. Busca Perfil Público com Retry implícito
         let { data: profile, error: profileError } = await supabase
             .from('users')
             .select('*')
             .eq('id', session.user.id)
             .maybeSingle(); 
 
-        // --- SELF HEALING (Auto-Reparo de Usuários Travados/Invisíveis) ---
         if (!profile) {
-            console.warn("Auto-reparo: Criando perfil ausente...");
             try {
                 const meta = session.user.user_metadata || {};
                 const newUser = {
@@ -135,26 +145,19 @@ export const storage = {
                     avatar_cor: meta.avatarCor || AVATAR_COLORS[0],
                     nivel: 1, xp: 0, pontos_totais: 0
                 };
-                
-                // UPSERT para evitar conflito se o trigger SQL já tiver rodado
                 const { error: insertError } = await supabase.from('users').upsert(newUser);
                 if (!insertError) profile = newUser;
                 else {
-                    // Última tentativa de leitura após falha de insert (race condition)
                     const retry = await supabase.from('users').select('*').eq('id', session.user.id).maybeSingle();
                     if (retry.data) profile = retry.data;
                 }
-            } catch (healError) {
-                console.error("Falha no auto-reparo:", healError);
-            }
+            } catch (healError) {}
         }
 
         if (!profile) return null; 
 
         const mappedUser = mapUser(profile);
 
-        // 4. Carrega dados sociais em paralelo sem bloquear a UI principal
-        // O timeout garante que redes lentas não travem o login
         try {
             const socialPromise = Promise.all([
                 supabase.from('follows').select('following_id').eq('follower_id', session.user.id),
@@ -170,12 +173,11 @@ export const storage = {
                 mappedUser.followingCount = mappedUser.followingIds.length;
                 mappedUser.followersCount = followersResult.count || 0;
             }
-        } catch (e) { /* Ignora erros não críticos de contagem */ }
+        } catch (e) { }
 
         localCache.set(CACHE_KEYS.USER, mappedUser);
         return mappedUser;
     } catch (fatalError) {
-        console.error("Erro no getCurrentUser", fatalError);
         return localCache.get<User>(CACHE_KEYS.USER);
     }
   },
@@ -230,7 +232,7 @@ export const storage = {
       .from('posts')
       .select(`*, users:user_id (name, avatar_url, avatar_cor), comments (*, users:user_id (name, avatar_url, avatar_cor)), likes (user_id)`)
       .order('created_at', { ascending: false })
-      .limit(50); // Limite de 50 posts para performance
+      .limit(50);
       
     if (error) return cached || [];
     
@@ -273,7 +275,6 @@ export const storage = {
   },
 
   toggleLike: async (postId: string, userId: string) => {
-      // Optimistic update handle in UI, fire and forget here
       const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
       if (data) await supabase.from('likes').delete().eq('id', data.id);
       else await supabase.from('likes').insert({ post_id: postId, user_id: userId });
@@ -317,7 +318,7 @@ export const storage = {
   },
 
   getRewards: async (): Promise<RewardItem[]> => {
-    const { data, error } = await supabase.from('rewards').select('*').order('cost', { ascending: true });
+    const { data, error } = await supabase.from('rewards').select('*').gt('stock', 0).order('cost', { ascending: true });
     if (error) return localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [];
     const mapped = (data || []).map((r: any) => ({
         id: r.id.toString(), title: r.title, cost: r.cost, desc: r.description, longDesc: r.long_desc,
@@ -326,6 +327,30 @@ export const storage = {
     localCache.set(CACHE_KEYS.REWARDS, mapped);
     return mapped;
   },
+  
+  // --- MÉTODO TRANSAÇÃO SEGURA PARA RESGATE ---
+  claimReward: async (rewardId: string, userId: string): Promise<{success: boolean, message: string}> => {
+    try {
+        const { data, error } = await supabase.rpc('claim_reward', { p_reward_id: rewardId, p_user_id: userId });
+        if (error) throw error;
+        return data as {success: boolean, message: string};
+    } catch (e: any) {
+        console.error(e);
+        return { success: false, message: e.message || 'Erro ao processar resgate' };
+    }
+  },
+
+  // --- ADMIN: LISTAR RESGATES ---
+  getClaims: async (): Promise<any[]> => {
+    const { data, error } = await supabase
+        .from('reward_claims')
+        .select(`*, users:user_id(name, email)`)
+        .order('created_at', { ascending: false });
+    
+    if (error) return [];
+    return data;
+  },
+
   saveReward: async (reward: RewardItem) => {
       const dbData = {
           title: reward.title, description: reward.desc, long_desc: reward.longDesc, cost: reward.cost,

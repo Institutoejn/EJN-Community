@@ -62,17 +62,38 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
       return;
     }
     
+    if (reward.stock <= 0) {
+      alert('Ops! Este item acabou de esgotar.');
+      return;
+    }
+
     const confirmRedeem = confirm(`Deseja trocar ${reward.cost} EJN Coins por "${reward.title}"?`);
     if (confirmRedeem) {
-      const updatedUser = {
-        ...user,
-        pontosTotais: user.pontosTotais - reward.cost
-      };
+      setClaiming(reward.id);
       
-      onUpdateUser(updatedUser);
-      await storage.saveUser(updatedUser);
-      setSelectedReward(null);
-      alert('Resgate solicitado com sucesso! Nossa equipe entrará em contato através do seu e-mail cadastrado.');
+      try {
+          // Chama transação segura do banco (RPC)
+          const result = await storage.claimReward(reward.id, user.id);
+          
+          if (result.success) {
+              const updatedUser = {
+                ...user,
+                pontosTotais: user.pontosTotais - reward.cost
+              };
+              
+              onUpdateUser(updatedUser);
+              // Atualiza lista localmente para refletir estoque
+              setRewards(prev => prev.map(r => r.id === reward.id ? {...r, stock: r.stock - 1} : r));
+              setSelectedReward(null);
+              alert('Resgate realizado com sucesso! O item foi para a lista de entregas do administrador.');
+          } else {
+              alert(`Falha no resgate: ${result.message}`);
+          }
+      } catch (e) {
+          alert('Erro de conexão ao processar resgate.');
+      } finally {
+          setClaiming(null);
+      }
     }
   };
 
@@ -102,7 +123,9 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
                 <span className="bg-ejn-gold text-ejn-dark px-3 py-1 rounded-full text-xs font-black">
                   {selectedReward.cost.toLocaleString()} EJN Coins
                 </span>
-                <span className="text-apple-tertiary text-xs font-bold uppercase tracking-widest">Brinde Exclusivo</span>
+                <span className={`${selectedReward.stock > 0 ? 'text-green-600' : 'text-red-500'} text-xs font-bold uppercase tracking-widest`}>
+                    {selectedReward.stock > 0 ? `${selectedReward.stock} disponíveis` : 'ESGOTADO'}
+                </span>
               </div>
               <p className="text-apple-text font-medium leading-relaxed text-sm md:text-base">
                 {selectedReward.longDesc}
@@ -116,10 +139,12 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
                 </button>
                 <button 
                   onClick={() => handleRedeem(selectedReward)}
-                  disabled={user.pontosTotais < selectedReward.cost}
-                  className={`w-full md:flex-[2] py-3 rounded-xl font-bold apple-transition ${user.pontosTotais >= selectedReward.cost ? 'bg-ejn-dark text-white hover:bg-ejn-medium' : 'bg-apple-bg text-apple-tertiary cursor-not-allowed'}`}
+                  disabled={user.pontosTotais < selectedReward.cost || selectedReward.stock <= 0 || claiming === selectedReward.id}
+                  className={`w-full md:flex-[2] py-3 rounded-xl font-bold apple-transition ${user.pontosTotais >= selectedReward.cost && selectedReward.stock > 0 ? 'bg-ejn-dark text-white hover:bg-ejn-medium' : 'bg-apple-bg text-apple-tertiary cursor-not-allowed'}`}
                 >
-                  {user.pontosTotais >= selectedReward.cost ? 'Confirmar Resgate' : 'Saldo Insuficiente'}
+                  {claiming === selectedReward.id ? 'Processando...' : 
+                   selectedReward.stock <= 0 ? 'Esgotado' :
+                   user.pontosTotais >= selectedReward.cost ? 'Confirmar Resgate' : 'Saldo Insuficiente'}
                 </button>
               </div>
             </div>
@@ -209,12 +234,17 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
           ))
         ) : (
           rewards.map(r => (
-            <div key={r.id} className="bg-white rounded-[24px] overflow-hidden apple-shadow flex flex-col group border border-apple-border/50 hover:scale-[1.02] apple-transition">
+            <div key={r.id} className={`bg-white rounded-[24px] overflow-hidden apple-shadow flex flex-col group border border-apple-border/50 transition-all ${r.stock <= 0 ? 'opacity-60 grayscale' : 'hover:scale-[1.02]'}`}>
               <div className="h-40 relative overflow-hidden">
                 <img src={r.imageUrl} alt={r.title} className="w-full h-full object-cover group-hover:scale-110 apple-transition" />
                 <div className="absolute top-3 right-3 bg-ejn-dark/80 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10">
                    <p className="text-xs font-black text-ejn-gold">{r.cost.toLocaleString()} <span className="text-[9px] font-bold text-white/60">EJN</span></p>
                 </div>
+                {r.stock <= 0 && (
+                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                        <span className="bg-red-600 text-white font-black uppercase px-4 py-2 transform -rotate-12 rounded-lg border-2 border-white">Esgotado</span>
+                    </div>
+                )}
               </div>
               
               <div className="p-5 flex flex-col flex-1">
@@ -230,10 +260,10 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
                   </button>
                   <button 
                     onClick={() => handleRedeem(r)}
-                    disabled={user.pontosTotais < r.cost}
-                    className={`flex-[2] py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-[0.2em] apple-transition ${user.pontosTotais >= r.cost ? 'bg-ejn-dark text-white hover:bg-ejn-gold hover:text-ejn-dark' : 'bg-apple-bg text-apple-tertiary cursor-not-allowed'}`}
+                    disabled={user.pontosTotais < r.cost || r.stock <= 0}
+                    className={`flex-[2] py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-[0.2em] apple-transition ${user.pontosTotais >= r.cost && r.stock > 0 ? 'bg-ejn-dark text-white hover:bg-ejn-gold hover:text-ejn-dark' : 'bg-apple-bg text-apple-tertiary cursor-not-allowed'}`}
                   >
-                    {user.pontosTotais >= r.cost ? 'Resgatar' : 'Saldo Insuficiente'}
+                    {r.stock <= 0 ? 'Esgotado' : user.pontosTotais >= r.cost ? 'Resgatar' : 'Saldo Baixo'}
                   </button>
                 </div>
               </div>
