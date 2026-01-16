@@ -2,8 +2,8 @@ import React, { useState, useEffect, Suspense, lazy } from 'react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
-import BottomNav from './components/BottomNav'; // Importando a nova barra
-import RightSidebar from './components/RightSidebar'; // Novo componente
+import BottomNav from './components/BottomNav'; 
+import RightSidebar from './components/RightSidebar'; 
 import ErrorBoundary from './components/ErrorBoundary';
 import { User, AppView } from './types';
 import { storage } from './services/storage';
@@ -11,6 +11,7 @@ import { supabase } from './services/supabase';
 import { Icons } from './constants';
 
 // --- LAZY LOADING ---
+// As views são carregadas sob demanda, mas faremos um "warm up" delas
 const Feed = lazy(() => import('./components/Feed'));
 const Profile = lazy(() => import('./components/Profile'));
 const Ranking = lazy(() => import('./components/Ranking'));
@@ -52,26 +53,30 @@ const App: React.FC = () => {
     let mounted = true;
 
     const initApp = async () => {
+      // 1. Tenta carga instantânea do cache
       const cachedUser = await storage.getCurrentUser(true);
       if (cachedUser) {
           if (mounted) {
               setCurrentUser(cachedUser);
               setLoading(false); 
-              // Pre-fetch inicial para "aquecer" os componentes
+              // Dispara atualização em background
               preFetchData();
+              // Aquece os componentes Lazy para navegação rápida
+              warmUpViews();
           }
       }
 
+      // 2. Verifica sessão real no servidor
       try {
           const freshUser = await storage.getCurrentUser(false); 
           if (mounted) {
              if (freshUser) {
                  if (freshUser.status === 'suspended') {
-                    handleLogout(); // Logout imediato se suspenso
+                    handleLogout(); 
                     return;
                  }
                  setCurrentUser(freshUser);
-                 preFetchData(); // Refresh silencioso
+                 preFetchData(); 
              } else if (!cachedUser) {
                  setCurrentUser(null);
              }
@@ -102,6 +107,7 @@ const App: React.FC = () => {
              setCurrentUser(user);
              setLoading(false);
              preFetchData();
+             warmUpViews();
          }
       }
     });
@@ -112,8 +118,6 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // --- REAL-TIME SECURITY LISTENER ---
-  // Monitora se o usuário foi suspenso enquanto usa o app
   useEffect(() => {
     if (!currentUser) return;
 
@@ -129,7 +133,6 @@ const App: React.FC = () => {
            alert("Sessão encerrada: Sua conta foi suspensa por um administrador.");
            handleLogout();
         } else if (newUser.role !== currentUser.role) {
-           // Atualiza role em tempo real (ex: virou gestor)
            setCurrentUser(prev => prev ? { ...prev, role: newUser.role } : null);
         }
       })
@@ -140,12 +143,23 @@ const App: React.FC = () => {
     };
   }, [currentUser?.id]);
 
-  // Otimização: Busca dados em background para popular o localStorage/Cache
+  // Carrega dados em background para popular o localStorage/Cache
   const preFetchData = () => {
+    // Isso garante que quando o usuário clicar em Ranking/Missões, os dados já estarão lá
     storage.getUsers().catch(() => {});
     storage.getMissions().catch(() => {});
     storage.getRewards().catch(() => {});
     storage.getTrending().catch(() => {});
+  };
+
+  // Força o import dos componentes lazy em background para evitar spinners na navegação
+  const warmUpViews = () => {
+    setTimeout(() => {
+        import('./components/Ranking');
+        import('./components/Missions');
+        import('./components/Profile');
+        import('./components/AdminPanel');
+    }, 2000); // 2 segundos após carga inicial
   };
 
   const handleLoginSuccess = (user: User) => {
@@ -155,6 +169,7 @@ const App: React.FC = () => {
     localStorage.setItem('ejn_last_view', 'FEED');
     setLoading(false);
     preFetchData();
+    warmUpViews();
   };
 
   const handleLogout = async () => {
@@ -214,7 +229,6 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-apple-bg selection:bg-ejn-gold selection:text-ejn-dark relative font-sans pb-20 lg:pb-0">
-        {/* Drawer Mobile (Lateral) - Mantido para funções extras e Admin */}
         {isMobileMenuOpen && (
           <div 
             className="fixed inset-0 bg-black/30 backdrop-blur-md z-[100] transition-opacity duration-300 lg:hidden"
@@ -254,7 +268,6 @@ const App: React.FC = () => {
           onToggleMenu={() => setIsMobileMenuOpen(true)}
         />
         
-        {/* Barra de Navegação Inferior (Exclusiva Mobile) */}
         {!isAdminView && <BottomNav currentView={currentView} setView={setCurrentView} user={currentUser} />}
 
         <main className="max-w-[1600px] mx-auto px-4 pt-20 md:pt-24 md:px-8 pb-24 md:pb-8">

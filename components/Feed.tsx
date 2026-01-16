@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { User, Post, Comment } from '../types';
 import { Icons } from '../constants';
@@ -13,7 +12,11 @@ interface FeedProps {
 }
 
 const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
-  const [posts, setPosts] = useState<Post[]>([]);
+  // Inicialização INSTANTÂNEA com dados do cache local
+  const [posts, setPosts] = useState<Post[]>(() => storage.getLocalPosts());
+  // Se tiver cache, loading é falso imediatamente
+  const [loadingPosts, setLoadingPosts] = useState(() => storage.getLocalPosts().length === 0);
+  
   const [newPost, setNewPost] = useState('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showXpGain, setShowXpGain] = useState(false);
@@ -28,7 +31,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const [editContent, setEditContent] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  const [loadingPosts, setLoadingPosts] = useState(true);
   const [processingImage, setProcessingImage] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -47,26 +49,23 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   // --- REALTIME SUBSCRIPTION ---
   useEffect(() => {
-    fetchPosts();
+    // Busca dados frescos em background, sem bloquear a UI (SWR)
+    fetchPosts(true);
 
     // Canal de Websocket para ouvir mudanças no banco em Tempo Real
     const channel = supabase.channel('feed-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
-         // Se um post for atualizado ou deletado por outro user (ou pelo próprio em outra aba)
          if (payload.eventType === 'UPDATE') {
              setPosts(current => current.map(p => p.id === payload.new.id ? { ...p, content: payload.new.content, isPinned: payload.new.is_pinned } : p));
          } else if (payload.eventType === 'DELETE') {
              setPosts(current => current.filter(p => p.id !== payload.old.id));
          } else if (payload.eventType === 'INSERT') {
-             // Novo post entra no topo se não for meu (meu já entra via optimistic UI)
              if (payload.new.user_id !== user.id) {
-                 fetchPosts(true); // Refresh seguro para trazer joins de usuário
+                 fetchPosts(true); 
              }
          }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
-         // Atualiza likes sem recarregar tudo (estratégia simples: refresh silencioso ou lógica complexa de delta)
-         // Para garantir consistência dos contadores:
          refreshLikesAndComments();
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
@@ -82,21 +81,26 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   }, []);
 
   const fetchPosts = async (force = false) => {
-      if (posts.length === 0) setLoadingPosts(true);
-      const savedPosts = await storage.getPosts(force);
-      setPosts(savedPosts);
-      setLoadingPosts(false);
+      try {
+        const savedPosts = await storage.getPosts(force);
+        // Só atualiza se houver mudança real ou se estiver vazio
+        if (savedPosts.length > 0) {
+            setPosts(savedPosts);
+        }
+      } catch (error) {
+          console.error("Background fetch error", error);
+      } finally {
+          setLoadingPosts(false);
+      }
   };
 
-  // Função leve para atualizar apenas números de likes e comentários sem piscar a tela
   const refreshLikesAndComments = async () => {
       const updatedPosts = await storage.getPosts(true);
       setPosts(current => {
-          // Mantém o estado local de quem está editando, atualiza apenas dados
           return updatedPosts.map(up => {
               const local = current.find(c => c.id === up.id);
               if (local && editingPostId === local.id) {
-                   return { ...up, content: local.content }; // Não sobrescreve o que o usuário está lendo/editando
+                   return { ...up, content: local.content }; 
               }
               return up;
           });
@@ -148,7 +152,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     e.preventDefault();
     if ((!newPost.trim() && !selectedImage) || processingImage) return;
 
-    // Optimistic UI: Adiciona imediatamente
     const tempId = 'temp-' + Date.now();
     const optimisticPost: Post = {
         id: tempId,
@@ -168,7 +171,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     setNewPost('');
     setSelectedImage(null);
 
-    // Save to DB
     await storage.savePost({
         userId: user.id,
         userName: user.name,
@@ -190,11 +192,9 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
     setTimeout(() => {
         setShowXpGain(false);
-        fetchPosts(true); // Sincroniza ID real
+        fetchPosts(true); 
     }, 2000);
   };
-
-  // --- EDIT & DELETE HANDLERS ---
 
   const handleEditClick = (post: Post) => {
     setEditingPostId(post.id);
@@ -208,16 +208,15 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleSaveEdit = async (postId: string) => {
-    // Optimistic Update
     setPosts(current => current.map(p => p.id === postId ? { ...p, content: editContent } : p));
     setEditingPostId(null);
 
     await storage.savePost({
         id: postId,
-        userId: user.id, // Requerido para verificação, mas não atualiza
+        userId: user.id, 
         userName: user.name,
         content: editContent,
-        timestamp: '', // Ignorado no update
+        timestamp: '', 
         likes: 0,
         comments: []
     });
@@ -226,7 +225,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   const handleDeletePost = async (postId: string) => {
     if(!confirm("Tem certeza que deseja excluir esta publicação?")) return;
 
-    // Optimistic Delete
     setPosts(current => current.filter(p => p.id !== postId));
     setOpenMenuId(null);
 
@@ -260,7 +258,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
-    // Adiciona comentário visualmente (mock ID para rapidez)
     const newComment: Comment = {
         id: 'temp-' + Date.now(),
         text: text,
@@ -379,8 +376,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <h4 className="font-bold text-apple-text text-sm leading-tight truncate">{post.userName}</h4>
-                          
-                          {/* Follow Button */}
                           {post.userId !== user.id && (
                             <>
                               <span className="text-apple-tertiary">•</span>
@@ -395,7 +390,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                           )}
                         </div>
 
-                        {/* MENU DE OPÇÕES DO DONO DO POST */}
                         {user.id === post.userId && (
                           <div className="relative">
                             <button 
@@ -430,7 +424,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                   </div>
                 </div>
                 
-                {/* CONTEÚDO DO POST (Modo Leitura ou Edição) */}
                 {editingPostId === post.id ? (
                   <div className="mb-4 bg-apple-bg p-3 rounded-xl border border-ejn-gold/50">
                      <textarea 
@@ -485,7 +478,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                   </button>
                 </div>
 
-                {/* Seção de Comentários */}
                 {openComments.has(post.id) && (
                   <div className="mt-4 pt-4 border-t border-apple-bg animate-fadeIn space-y-4">
                     {(post.comments || []).map(comment => (

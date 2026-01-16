@@ -1,11 +1,6 @@
-
 import React, { useState, useEffect } from 'react';
 import { User, Mission, RewardItem } from '../types';
 import { storage } from '../services/storage';
-
-// Cache em memória para transição instantânea
-let missionsCache: Mission[] | null = null;
-let rewardsCache: RewardItem[] | null = null;
 
 interface MissionsProps {
   user: User;
@@ -18,23 +13,21 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
   const [activeTab, setActiveTab] = useState<Tab>('TASKS');
   const [claiming, setClaiming] = useState<string | null>(null);
   const [selectedReward, setSelectedReward] = useState<RewardItem | null>(null);
-  const [missions, setMissions] = useState<Mission[]>(missionsCache || []);
-  const [rewards, setRewards] = useState<RewardItem[]>(rewardsCache || []);
-  const [loading, setLoading] = useState(!missionsCache || !rewardsCache);
+  
+  // Inicialização síncrona com cache
+  const [missions, setMissions] = useState<Mission[]>(() => storage.getLocalMissions());
+  const [rewards, setRewards] = useState<RewardItem[]>(() => storage.getLocalRewards());
+  const [loading, setLoading] = useState(missions.length === 0 && rewards.length === 0);
 
   useEffect(() => {
     const loadData = async () => {
-      if (!missionsCache || !rewardsCache) setLoading(true);
-      
       try {
         const [m, r] = await Promise.all([
           storage.getMissions(),
           storage.getRewards()
         ]);
         
-        missionsCache = m;
-        rewardsCache = r;
-        
+        // Só atualiza se houver novidade
         setMissions(m);
         setRewards(r);
       } catch (error) {
@@ -83,7 +76,7 @@ const Missions: React.FC<MissionsProps> = ({ user, onUpdateUser }) => {
     }
   };
 
-  if (loading && !missions.length && !rewards.length) {
+  if (loading) {
     return <div className="p-10 text-center text-apple-tertiary text-xs font-bold uppercase tracking-widest">Carregando desafios...</div>;
   }
 

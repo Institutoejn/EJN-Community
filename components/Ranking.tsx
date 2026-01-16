@@ -1,11 +1,7 @@
-
 import React, { useEffect, useState } from 'react';
 import { User } from '../types';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
-
-// Cache em memória para persistência durante a sessão (transições rápidas)
-let rankingCache: any[] | null = null;
 
 interface RankingProps {
   user: User;
@@ -13,16 +9,18 @@ interface RankingProps {
 }
 
 const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
-  const [leaderboard, setLeaderboard] = useState<any[]>(rankingCache || []);
-  const [loading, setLoading] = useState(!rankingCache);
+  // Inicializa instantaneamente com cache local
+  const [leaderboard, setLeaderboard] = useState<any[]>(() => {
+    const cached = storage.getLocalUsers();
+    return cached.length > 0 ? cached.sort((a, b) => b.pontosTotais - a.pontosTotais).map(u => ({...u, isCurrent: u.id === user.id})) : [];
+  });
+  
+  const [loading, setLoading] = useState(leaderboard.length === 0);
 
   useEffect(() => {
     const fetchUsers = async () => {
-      // Se já temos cache, fazemos o fetch em background (SWR pattern)
-      if (!rankingCache) setLoading(true);
-      
       try {
-        const allUsers = await storage.getUsers();
+        const allUsers = await storage.getUsers(true); // Background refresh
         const ranked = allUsers
           .sort((a, b) => b.pontosTotais - a.pontosTotais)
           .map(u => ({
@@ -30,10 +28,9 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             isCurrent: u.id === user.id
           }));
         
-        rankingCache = ranked;
         setLeaderboard(ranked);
       } catch (error) {
-        console.error("Erro ao carregar ranking:", error);
+        console.error("Erro ao atualizar ranking:", error);
       } finally {
         setLoading(false);
       }

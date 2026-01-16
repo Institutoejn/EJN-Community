@@ -64,6 +64,14 @@ const mapUser = (dbUser: any): User => ({
 });
 
 export const storage = {
+  // --- MÉTODOS SÍNCRONOS (INSTANT VIEW) ---
+  // Estes métodos retornam dados IMEDIATAMENTE do localStorage para renderização instantânea
+  getLocalPosts: (): Post[] => localCache.get<Post[]>(CACHE_KEYS.POSTS) || [],
+  getLocalUsers: (): User[] => localCache.get<User[]>(CACHE_KEYS.USERS) || [],
+  getLocalMissions: (): Mission[] => localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [],
+  getLocalRewards: (): RewardItem[] => localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [],
+  getLocalTrending: (): TrendingTopic[] => localCache.get<TrendingTopic[]>(CACHE_KEYS.TRENDING) || [],
+
   // --- AUTH & USER ---
   getCurrentUser: async (skipNetwork = false): Promise<User | null> => {
     try {
