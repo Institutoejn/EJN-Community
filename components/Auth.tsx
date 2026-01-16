@@ -19,11 +19,13 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
 
   // Verifica as chaves ao montar o componente
   useEffect(() => {
-    const env = (import.meta as any).env;
+    // Safety check: ensure env object exists before accessing properties
+    const env = (import.meta as any).env || {};
     const url = env.VITE_SUPABASE_URL;
     const key = env.VITE_SUPABASE_ANON_KEY;
 
     if (!url || !key || url.includes('seu-projeto') || url.includes('placeholder')) {
+      console.warn("Supabase credentials missing or invalid in environment variables.");
       setMissingConfig(true);
     }
   }, []);
@@ -124,26 +126,23 @@ const Auth: React.FC<AuthProps> = ({ onLoginSuccess }) => {
         <div className="w-full max-w-lg bg-white rounded-[32px] p-10 apple-shadow border-l-8 border-ejn-gold animate-fadeIn">
           <h2 className="text-2xl font-black text-ejn-dark mb-4">Configuração Necessária ⚠️</h2>
           <p className="text-apple-text text-sm mb-6 leading-relaxed">
-            O aplicativo não conseguiu conectar ao Supabase. Isso acontece porque o arquivo <code className="bg-gray-100 px-2 py-1 rounded text-red-500 font-mono">.env.local</code> ainda contém os valores de exemplo.
+            O aplicativo não conseguiu conectar ao Supabase. Isso acontece porque as variáveis de ambiente não foram carregadas ou estão incorretas.
           </p>
           
           <div className="bg-apple-bg rounded-2xl p-6 mb-8 space-y-4">
-            <h3 className="font-bold text-sm uppercase tracking-widest text-apple-secondary">Como resolver:</h3>
-            <ol className="list-decimal list-inside text-sm space-y-3 font-medium text-apple-text">
-              <li>Crie um projeto em <a href="https://supabase.com" target="_blank" className="text-ejn-medium underline hover:text-ejn-dark">supabase.com</a></li>
-              <li>Vá em <strong>Project Settings &gt; API</strong></li>
-              <li>Copie a <strong>URL</strong> e a <strong>anon key</strong></li>
-              <li>Abra o arquivo <code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">.env.local</code> no seu editor</li>
-              <li>Substitua os valores de exemplo pelos reais</li>
-              <li>Reinicie o servidor (<code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">Ctrl+C</code> e <code className="font-mono text-xs bg-white px-1 py-0.5 rounded border border-gray-200">npm run dev</code>)</li>
-            </ol>
+            <h3 className="font-bold text-sm uppercase tracking-widest text-apple-secondary">Diagnóstico:</h3>
+            <ul className="list-disc list-inside text-sm space-y-2 font-medium text-apple-text">
+              <li>Verifique se o arquivo <code className="font-mono text-red-500">.env.local</code> existe.</li>
+              <li>Confirme se as chaves <strong>VITE_SUPABASE_URL</strong> e <strong>ANON_KEY</strong> estão corretas.</li>
+              <li><strong>Importante:</strong> Reinicie o servidor após criar o arquivo .env (<code className="font-mono bg-gray-200 px-1 rounded">Ctrl+C</code> e <code className="font-mono bg-gray-200 px-1 rounded">npm run dev</code>).</li>
+            </ul>
           </div>
 
           <button 
             onClick={() => window.location.reload()}
             className="w-full py-4 bg-ejn-dark text-white rounded-xl font-bold uppercase tracking-widest hover:bg-ejn-medium apple-transition"
           >
-            Já configurei, recarregar página
+            Recarregar Página
           </button>
         </div>
       </div>
