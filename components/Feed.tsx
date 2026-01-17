@@ -12,7 +12,7 @@ interface FeedProps {
 }
 
 const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
-  // ⚡ CARGA INSTANTÂNEA: Inicializa direto do cache síncrono
+  // Inicializa com cache para velocidade, mas atualiza via rede logo em seguida
   const [posts, setPosts] = useState<Post[]>(() => storage.getLocalPosts());
   const [loadingPosts, setLoadingPosts] = useState(() => storage.getLocalPosts().length === 0);
   
@@ -48,26 +48,59 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // --- SISTEMA REALTIME UNIFICADO ---
   useEffect(() => {
-    // Atualiza posts em background
+    // 1. Carga inicial robusta
     fetchPosts(true);
 
-    const channel = supabase.channel('feed-updates')
+    // 2. Canal de Inscrição para TUDO que afeta o feed
+    const channel = supabase.channel('feed-global-updates')
+      // A. Escuta Mudanças nos POSTS (Novo, Editar, Excluir)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
-         if (payload.eventType === 'UPDATE') {
+         if (payload.eventType === 'INSERT') {
+             // Se não fui eu que postei (para evitar duplicação com update otimista), recarrega
+             // Ou recarrega sempre para garantir consistência de IDs
+             fetchPosts(true);
+         } else if (payload.eventType === 'UPDATE') {
              setPosts(current => current.map(p => p.id === payload.new.id ? { ...p, content: payload.new.content, isPinned: payload.new.is_pinned } : p));
          } else if (payload.eventType === 'DELETE') {
              setPosts(current => current.filter(p => p.id !== payload.old.id));
-         } else if (payload.eventType === 'INSERT') {
-             if (payload.new.user_id !== user.id) {
-                 setTimeout(() => fetchPosts(true), 500);
-             }
          }
+      })
+      // B. Escuta LIKES (Fundamental para correção da contagem)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, async (payload) => {
+          // Quando ocorre um like/unlike, precisamos atualizar o post específico
+          // A maneira mais segura é recarregar aquele post específico ou manipular o contador
+          
+          const affectedPostId = payload.new?.post_id || payload.old?.post_id;
+          if (!affectedPostId) return;
+
+          // Busca a contagem atualizada apenas deste post
+          const { count } = await supabase.from('likes').select('*', { count: 'exact', head: true }).eq('post_id', affectedPostId);
+          
+          // Verifica se o usuário atual curtiu
+          const { data: myLike } = await supabase.from('likes').select('id').eq('post_id', affectedPostId).eq('user_id', user.id).maybeSingle();
+
+          setPosts(current => current.map(p => {
+              if (p.id === affectedPostId) {
+                  return {
+                      ...p,
+                      likes: count || 0,
+                      likedByMe: !!myLike
+                  };
+              }
+              return p;
+          }));
+      })
+      // C. Escuta COMENTÁRIOS
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, async (payload) => {
+           // Recarrega lista completa para garantir consistência
+           fetchPosts(true);
       })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, []);
+  }, [user.id]);
 
   const fetchPosts = async (force = false) => {
       try {
@@ -96,10 +129,8 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   const handleFollowFromModal = (targetId: string) => {
       if (!selectedProfile) return;
-
       const isFollowing = user.followingIds.includes(targetId);
       
-      // 1. Atualização Otimista no Modal (Instantânea)
       setSelectedProfile(prev => {
           if (!prev) return null;
           return {
@@ -108,7 +139,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
           };
       });
 
-      // 2. Dispara lógica global
       onFollow(targetId);
   };
 
@@ -146,6 +176,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             likedByMe: false
         };
 
+        // Adiciona otimista
         setPosts([optimisticPost, ...posts]);
         
         setNewPost('');
@@ -164,14 +195,12 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             id: '' 
         });
 
-        // Coins = 10, XP = 50
         const xpBonus = uploadedImageUrl ? 75 : 50;
         const coinBonus = 10;
         
         setXpAmount(xpBonus);
         setShowXpGain(true);
         
-        // ATUALIZAÇÃO INSTANTÂNEA PARA O RANKING
         const updatedUser = { 
             ...user, 
             xp: user.xp + xpBonus,
@@ -182,7 +211,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         storage.saveUser(updatedUser);
 
         setTimeout(() => setShowXpGain(false), 2000);
-        setTimeout(() => fetchPosts(true), 1000);
+        // O Realtime cuidará de atualizar o ID temporário para o real eventualmente
 
     } catch (error) {
         console.error("Erro ao publicar:", error);
@@ -199,6 +228,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleSaveEdit = async (postId: string) => {
+    // Atualização Otimista
     setPosts(current => current.map(p => p.id === postId ? { ...p, content: editContent } : p));
     setEditingPostId(null);
     await storage.savePost({
@@ -208,27 +238,26 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
 
   const handleDeletePost = async (postId: string) => {
     if(!confirm("Excluir publicação?")) return;
+    // Otimista
     setPosts(current => current.filter(p => p.id !== postId));
     setOpenMenuId(null);
     await storage.deletePost(postId);
   };
 
   const handleLike = async (postId: string) => {
-    // 1. Atualiza visual do botão
+    // 1. Atualização Visual Otimista (Para feedback instantâneo no clique)
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
                 ...p,
                 likedByMe: !p.likedByMe,
-                likes: p.likedByMe ? p.likes - 1 : p.likes + 1
+                likes: p.likedByMe ? Math.max(0, p.likes - 1) : p.likes + 1
             };
         }
         return p;
     }));
     
-    // 2. Não ganha pontos por curtir o próprio post, então não atualiza user local
-    // (A lógica de ganhar pontos ao RECEBER like é no servidor)
-    
+    // 2. Envia para o banco (O Realtime confirmará o estado final)
     await storage.toggleLike(postId, user.id);
   };
 
@@ -253,13 +282,13 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         avatarCor: user.avatarCor
     };
 
+    // Otimista
     setPosts(current => current.map(p => {
         if(p.id === postId) return { ...p, comments: [...(p.comments || []), newComment] };
         return p;
     }));
     
-    // ATUALIZAÇÃO INSTANTÂNEA DE RANKING POR COMENTÁRIO
-    // +10 XP, +2 Coins
+    // Atualiza pontos
     const updatedUser = {
         ...user,
         xp: user.xp + 10,
@@ -317,7 +346,6 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 {user.id !== selectedProfile.id && (
                     <button 
                         onClick={() => handleFollowFromModal(selectedProfile.id)}
-                        // O disabled foi removido para permitir toggle (seguir/deixar de seguir)
                         className={`w-full mt-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest apple-transition ${user.followingIds.includes(selectedProfile.id) ? 'bg-apple-bg text-apple-tertiary' : 'bg-ejn-dark text-white hover:bg-ejn-medium hover:scale-105 active:scale-95'}`}
                     >
                         {user.followingIds.includes(selectedProfile.id) ? 'Deixar de Seguir' : 'Seguir'}
@@ -429,10 +457,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 )}
                 
                 <div className="flex gap-6 mt-2 pt-4 border-t border-apple-border">
-                  <button onClick={() => handleLike(post.id)} className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wide ${post.likedByMe ? 'text-red-500' : 'text-apple-secondary'}`}>
+                  <button onClick={() => handleLike(post.id)} className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wide transition-colors ${post.likedByMe ? 'text-red-500' : 'text-apple-secondary hover:text-red-400'}`}>
                     <span>{post.likedByMe ? '❤️' : '🤍'}</span> {post.likes}
                   </button>
-                  <button onClick={() => toggleComments(post.id)} className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-apple-secondary">
+                  <button onClick={() => toggleComments(post.id)} className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-apple-secondary hover:text-ejn-medium transition-colors">
                     <span>💬</span> {(post.comments || []).length}
                   </button>
                 </div>
@@ -440,7 +468,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 {openComments.has(post.id) && (
                   <div className="mt-4 pt-4 border-t border-apple-bg space-y-4">
                     {(post.comments || []).map(c => (
-                      <div key={c.id} className="flex gap-3">
+                      <div key={c.id} className="flex gap-3 animate-fadeIn">
                         <div className="cursor-pointer" onClick={() => handleProfileClick(c.userId)}>
                             <Avatar name={c.userName} bgColor={c.avatarCor} url={c.avatarUrl} size="xs" />
                         </div>

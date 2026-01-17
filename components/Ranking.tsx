@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { User } from '../types';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
+import { supabase } from '../services/supabase';
 
 interface RankingProps {
   user: User;
@@ -12,26 +13,17 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
   // Inicializa instantaneamente com cache local
   const [leaderboard, setLeaderboard] = useState<any[]>(() => {
     const cached = storage.getLocalUsers();
-    return cached.length > 0 ? cached.sort((a, b) => b.xp - a.xp).map(u => ({...u, isCurrent: u.id === user.id})) : [];
+    return cached.length > 0 ? cached.sort((a, b) => b.pontosTotais - a.pontosTotais).map(u => ({...u, isCurrent: u.id === user.id})) : [];
   });
   
   const [loading, setLoading] = useState(leaderboard.length === 0);
 
-  // EFEITO DE TEMPO REAL: Se o XP do usuário mudar (ex: curtiu algo), reordena a lista na hora
-  useEffect(() => {
-    const updateRanking = async () => {
-      try {
-        // Pega todos os usuários (pode vir do cache atualizado)
-        const allUsers = await storage.getUsers(); 
-        
-        // Atualiza especificamente o usuário atual com os dados mais recentes da prop 'user'
-        // Isso garante o "feedback instantâneo" que você pediu
-        const updatedList = allUsers.map(u => 
-            u.id === user.id ? { ...u, xp: user.xp, pontosTotais: user.pontosTotais } : u
-        );
-
-        const ranked = updatedList
-          .sort((a, b) => b.xp - a.xp) // Ordena por XP (Histórico de Atividade)
+  // Função centralizada de atualização
+  const updateRanking = async () => {
+    try {
+        const allUsers = await storage.getUsers(true); // Force refresh
+        const ranked = allUsers
+          .sort((a, b) => b.pontosTotais - a.pontosTotais) // Ordena por Coins/Pontos Totais (Critério de Negócios)
           .map(u => ({
             ...u,
             isCurrent: u.id === user.id
@@ -39,13 +31,34 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
         
         setLeaderboard(ranked);
         setLoading(false);
-      } catch (error) {
+    } catch (error) {
         console.error("Erro ao atualizar ranking:", error);
-      }
-    };
+    }
+  };
 
+  useEffect(() => {
+    // 1. Carga inicial
     updateRanking();
-  }, [user.xp, user.id]); // Dependência crucial: user.xp
+
+    // 2. REALTIME GLOBAL: Escuta alterações na tabela users
+    // Se João ganhar 500 XP, Maria verá o ranking mudar instantaneamente
+    const channel = supabase.channel('ranking-realtime')
+        .on(
+            'postgres_changes', 
+            { event: 'UPDATE', schema: 'public', table: 'users' }, 
+            (payload) => {
+                // Otimização: Só atualiza se XP ou PontosTotais mudarem
+                const oldU = payload.old as any;
+                const newU = payload.new as any;
+                if (oldU.xp !== newU.xp || oldU.pontos_totais !== newU.pontos_totais) {
+                    updateRanking();
+                }
+            }
+        )
+        .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user.id]);
 
   const top3 = leaderboard.slice(0, 3);
   
@@ -84,7 +97,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-4 pb-2 px-2 text-center apple-shadow">
                <p className="text-[10px] font-bold text-apple-text truncate">{top3[1].name.split(' ')[0]}</p>
-               <p className="text-[9px] font-black text-ejn-medium">{top3[1].xp.toLocaleString()} XP</p>
+               <p className="text-[9px] font-black text-ejn-medium">{top3[1].pontosTotais.toLocaleString()} pts</p>
             </div>
             <div className="bg-slate-200 h-8 md:h-16 w-full rounded-b-lg"></div>
           </div>
@@ -98,7 +111,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-6 pb-2 px-2 text-center apple-shadow border-x-2 border-t-2 border-ejn-gold/20">
                <p className="text-xs font-bold text-apple-text truncate">{top3[0].name.split(' ')[0]}</p>
-               <p className="text-xs font-black text-ejn-gold">{top3[0].xp.toLocaleString()} XP</p>
+               <p className="text-xs font-black text-ejn-gold">{top3[0].pontosTotais.toLocaleString()} pts</p>
             </div>
             <div className="bg-ejn-gold/20 h-12 md:h-24 w-full rounded-b-lg border-x-2 border-b-2 border-ejn-gold/10"></div>
           </div>
@@ -112,7 +125,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
             </div>
             <div className="bg-white rounded-t-2xl w-full pt-4 pb-2 px-2 text-center apple-shadow">
                <p className="text-[10px] font-bold text-apple-text truncate">{top3[2].name.split(' ')[0]}</p>
-               <p className="text-[9px] font-black text-ejn-medium">{top3[2].xp.toLocaleString()} XP</p>
+               <p className="text-[9px] font-black text-ejn-medium">{top3[2].pontosTotais.toLocaleString()} pts</p>
             </div>
             <div className="bg-orange-100 h-6 md:h-12 w-full rounded-b-lg"></div>
           </div>
@@ -121,7 +134,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white rounded-2xl p-6 apple-shadow border-l-4 border-ejn-gold flex flex-col justify-between">
-           <p className="text-[10px] font-black text-apple-tertiary uppercase tracking-widest">Sua XP (Ranking)</p>
+           <p className="text-[10px] font-black text-apple-tertiary uppercase tracking-widest">Sua XP (Reputação)</p>
            <h3 className="text-3xl font-black text-apple-text mt-2">{user.xp.toLocaleString()} <span className="text-xs text-apple-tertiary font-bold">XP</span></h3>
            <p className="text-[10px] text-ejn-medium font-bold mt-2">Próximo Nível: {user.xpProximoNivel.toLocaleString()}</p>
         </div>
@@ -133,14 +146,14 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
         <div className="bg-white rounded-2xl p-6 apple-shadow border-l-4 border-ejn-dark flex flex-col justify-between">
            <p className="text-[10px] font-black text-apple-tertiary uppercase tracking-widest">Posição Atual</p>
            <h3 className="text-3xl font-black text-ejn-dark mt-2">#{leaderboard.findIndex(u => u.isCurrent) + 1}</h3>
-           <p className="text-[10px] text-green-500 font-bold mt-2">↑ Você está subindo!</p>
+           <p className="text-[10px] text-green-500 font-bold mt-2">↑ Ranking Global</p>
         </div>
       </div>
 
       <div className="bg-white rounded-3xl apple-shadow overflow-hidden">
         <div className="px-6 py-4 bg-apple-bg/50 border-b border-apple-border flex justify-between items-center">
-          <h3 className="text-sm font-black text-apple-text uppercase tracking-widest">Classificação Geral</h3>
-          <span className="text-[10px] font-bold text-apple-tertiary uppercase">Atualizado agora mesmo</span>
+          <h3 className="text-sm font-black text-apple-text uppercase tracking-widest">Classificação Geral (Pontos)</h3>
+          <span className="text-[10px] font-bold text-apple-tertiary uppercase">Tempo Real</span>
         </div>
         <div className="divide-y divide-apple-border">
           {leaderboard.map((u, i) => (
@@ -170,7 +183,7 @@ const Ranking: React.FC<RankingProps> = ({ user, onFollow }) => {
                   </button>
                 )}
                 <div className="text-right min-w-[60px]">
-                  <p className="text-sm font-black text-ejn-medium">{u.xp.toLocaleString()}</p>
+                  <p className="text-sm font-black text-ejn-medium">{u.pontosTotais.toLocaleString()}</p>
                   <p className="text-[9px] font-bold text-apple-tertiary uppercase tracking-tighter">Pontos</p>
                 </div>
               </div>

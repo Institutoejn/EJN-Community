@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Post, Mission, RewardItem, AdminSubView, AppSettings } from '../types';
 import { storage } from '../services/storage';
+import { supabase } from '../services/supabase';
 import Avatar from './Avatar';
 import { Icons } from '../constants';
 
@@ -38,11 +39,35 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
   const [rewardForm, setRewardForm] = useState<Partial<RewardItem>>({ category: 'Produto', stock: 10, icon: '🎁' });
 
   useEffect(() => { 
-    loadData(); 
+    // 1. Carregamento Inicial
+    loadData();
+
+    // 2. SISTEMA REALTIME ADMIN
+    const channel = supabase.channel('admin-dashboard-realtime')
+        // Escuta novos pedidos de saque (reward_claims)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_claims' }, () => {
+             storage.getClaims().then(setClaims);
+             showToast("Nova atualização em Entregas", "success");
+        })
+        // Escuta entrada de novos alunos ou suspensões
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+             storage.getUsers(true).then(setUsers);
+        })
+        // Escuta posts para moderação em tempo real
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, () => {
+             storage.getPosts(true).then(setPosts);
+        })
+        // Escuta estoque de brindes
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'rewards' }, () => {
+             storage.getRewards().then(setRewards);
+        })
+        .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const loadData = async () => {
-    setLoadingData(true);
+    // setLoadingData(true); // Removido para evitar flash em atualizações manuais
     try {
       // Force refresh true para garantir dados em tempo real
       const u = await storage.getUsers(true).catch(() => []);
@@ -246,9 +271,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
           <div>
               <div className="flex justify-between items-center mb-6">
                  <h2 className="text-lg font-bold text-apple-text">Visão Geral em Tempo Real</h2>
-                 <button onClick={loadData} className="text-xs font-bold bg-white px-4 py-2 rounded-full border hover:bg-apple-bg">
-                    ↻ Atualizar Agora
-                 </button>
+                 <div className="flex items-center gap-2">
+                    <span className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                    </span>
+                    <span className="text-[10px] font-bold text-green-600 uppercase">Live</span>
+                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
