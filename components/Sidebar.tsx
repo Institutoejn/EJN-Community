@@ -26,14 +26,15 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         // Se for refresh forçado, ignora o cache local para pegar o valor REAL do banco
         const users = await storage.getUsers(forceRefresh);
         
-        // Ordena por PONTOS TOTAIS (Coins) como solicitado para o ranking de negócios
+        // CORREÇÃO DE LÓGICA: Ranking agora é baseado em XP (Mérito Total) e não Saldo (Coins)
+        // Isso evita que o aluno caia no ranking ao comprar itens
         const ranked = users
-            .sort((a, b) => b.pontosTotais - a.pontosTotais)
+            .sort((a, b) => b.xp - a.xp)
             .slice(0, 5)
             .map(u => ({
                 id: u.id,
                 name: u.name,
-                points: u.pontosTotais,
+                points: u.xp, // Exibe XP
                 avatarCor: u.avatarCor,
                 avatarUrl: u.avatarUrl,
                 isCurrent: u.id === user.id
@@ -69,7 +70,6 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         },
         (payload) => {
           // Se houver qualquer atualização em usuários, recarrega o ranking forçando dados novos
-          // Isso garante que se um aluno ganhar 1 ponto, o ranking atualiza na hora para todos
           fetchRanking(true);
         }
       )
@@ -155,7 +155,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         <div className={`absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full m-6 transition-opacity duration-500 ${liveUpdate ? 'opacity-100 animate-ping' : 'opacity-0'}`}></div>
 
         <div className="flex items-center justify-between mb-5">
-          <h4 className="font-bold text-apple-text text-sm">Top 5 Global</h4>
+          <h4 className="font-bold text-apple-text text-sm">Top 5 (Por XP)</h4>
           <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${liveUpdate ? 'text-green-600' : 'text-ejn-medium'}`}>
              {liveUpdate ? 'Atualizando...' : 'Tempo Real'}
           </span>
@@ -168,7 +168,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
                  <Avatar name={u.name} bgColor={u.avatarCor} url={u.avatarUrl} size="xs" className="w-8 h-8 text-[10px]" />
                  <div className="min-w-0">
                     <p className={`text-xs font-bold truncate ${u.isCurrent ? 'text-ejn-dark' : 'text-apple-text'}`}>{u.name}</p>
-                    <p className="text-[10px] text-apple-secondary font-medium">{u.points.toLocaleString()} pts</p>
+                    <p className="text-[10px] text-apple-secondary font-medium">{u.points.toLocaleString()} XP</p>
                  </div>
               </div>
             </div>
