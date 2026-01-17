@@ -273,13 +273,37 @@ export const storage = {
     return mappedPosts;
   },
 
-  savePost: async (post: Post) => {
+  // CORREÇÃO CRÍTICA: Retorna o objeto Post completo do banco para atualizar o ID local
+  savePost: async (post: Post): Promise<Post | null> => {
     if (post.id && !post.id.startsWith('temp-')) {
-      const { error } = await supabase.from('posts').update({ content: post.content, is_pinned: post.isPinned }).eq('id', post.id);
+      const { data, error } = await supabase
+        .from('posts')
+        .update({ content: post.content, is_pinned: post.isPinned })
+        .eq('id', post.id)
+        .select()
+        .single();
       if (error) throw error;
+      return null;
     } else {
-      const { error } = await supabase.from('posts').insert({ user_id: post.userId, content: post.content, image_url: post.imageUrl });
+      const { data, error } = await supabase
+        .from('posts')
+        .insert({ user_id: post.userId, content: post.content, image_url: post.imageUrl })
+        .select()
+        .single();
+      
       if (error) throw error;
+      
+      // Retorna formato compatível para troca de ID
+      return {
+          id: data.id,
+          userId: data.user_id,
+          userName: post.userName,
+          content: data.content,
+          imageUrl: data.image_url,
+          timestamp: data.created_at,
+          likes: 0,
+          comments: []
+      };
     }
   },
 
@@ -291,9 +315,11 @@ export const storage = {
   },
 
   toggleLike: async (postId: string, userId: string) => {
+      // Proteção: Não tenta curtir posts com ID temporário
+      if (postId.startsWith('temp-')) return;
+
       try {
-          // CORREÇÃO CRÍTICA: Use maybeSingle() ao invés de single()
-          // single() estoura erro se não achar nada, impedindo o insert
+          // Usa maybeSingle para evitar erro 406/PGRST116 se não existir
           const { data, error } = await supabase
             .from('likes')
             .select('id')
@@ -301,13 +327,11 @@ export const storage = {
             .eq('user_id', userId)
             .maybeSingle();
             
-          if (error && error.code !== 'PGRST116') throw error; // Ignora erro de "não encontrado"
+          if (error && error.code !== 'PGRST116') throw error; 
 
           if (data) {
-              // Se já existe, remove (Unlike)
               await supabase.from('likes').delete().eq('id', data.id);
           } else {
-              // Se não existe, cria (Like)
               await supabase.from('likes').insert({ post_id: postId, user_id: userId });
           }
       } catch (e) {
@@ -316,12 +340,31 @@ export const storage = {
       }
   },
 
-  addComment: async (postId: string, userId: string, content: string) => {
-      const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: userId, content: content });
+  // CORREÇÃO: Retorna o comentário criado para atualizar ID
+  addComment: async (postId: string, userId: string, content: string): Promise<Comment | null> => {
+      // Proteção contra IDs temporários
+      if (postId.startsWith('temp-')) return null;
+
+      const { data, error } = await supabase
+        .from('comments')
+        .insert({ post_id: postId, user_id: userId, content: content })
+        .select('*, users:user_id(name, avatar_url, avatar_cor)')
+        .single();
+
       if (error) {
           console.error("Erro ao comentar:", error);
           throw error;
       }
+
+      return {
+          id: data.id,
+          text: data.content,
+          timestamp: data.created_at,
+          userId: data.user_id,
+          userName: data.users?.name,
+          avatarUrl: data.users?.avatar_url,
+          avatarCor: data.users?.avatar_cor
+      };
   },
 
   getTrending: async (): Promise<TrendingTopic[]> => {

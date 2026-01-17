@@ -48,37 +48,38 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // --- SISTEMA REALTIME UNIFICADO ---
+  // --- SISTEMA REALTIME UNIFICADO E CORRIGIDO ---
   useEffect(() => {
-    // 1. Carga inicial robusta
     fetchPosts(true);
 
-    // 2. Canal de Inscrição para TUDO que afeta o feed
     const channel = supabase.channel('feed-global-updates')
-      // A. Escuta Mudanças nos POSTS (Novo, Editar, Excluir)
+      // A. Escuta Mudanças nos POSTS
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
          if (payload.eventType === 'INSERT') {
-             // Se não fui eu que postei (para evitar duplicação com update otimista), recarrega
-             // Ou recarrega sempre para garantir consistência de IDs
-             fetchPosts(true);
+             // Se o post novo já existe no estado (via otimismo), não faz nada ou atualiza ID se precisar
+             // Mas como fazemos a troca manual no submit, aqui focamos em posts DE OUTROS
+             setPosts(current => {
+                 // Evita duplicação se o ID já estiver lá
+                 if (current.some(p => p.id === payload.new.id)) return current;
+                 // Se não estiver (post de outro), busca o post completo
+                 fetchPosts(true); 
+                 return current;
+             });
          } else if (payload.eventType === 'UPDATE') {
              setPosts(current => current.map(p => p.id === payload.new.id ? { ...p, content: payload.new.content, isPinned: payload.new.is_pinned } : p));
          } else if (payload.eventType === 'DELETE') {
              setPosts(current => current.filter(p => p.id !== payload.old.id));
          }
       })
-      // B. Escuta LIKES (Fundamental para correção da contagem)
+      // B. Escuta LIKES - ATUALIZAÇÃO CIRÚRGICA
       .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, async (payload) => {
-          // Quando ocorre um like/unlike, precisamos atualizar o post específico
-          // A maneira mais segura é recarregar aquele post específico ou manipular o contador
-          
           const affectedPostId = payload.new?.post_id || payload.old?.post_id;
           if (!affectedPostId) return;
 
-          // Busca a contagem atualizada apenas deste post
+          // Busca a contagem atualizada do banco
           const { count } = await supabase.from('likes').select('*', { count: 'exact', head: true }).eq('post_id', affectedPostId);
           
-          // Verifica se o usuário atual curtiu
+          // Verifica se EU curti (para garantir que a UI não minta)
           const { data: myLike } = await supabase.from('likes').select('id').eq('post_id', affectedPostId).eq('user_id', user.id).maybeSingle();
 
           setPosts(current => current.map(p => {
@@ -86,16 +87,41 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                   return {
                       ...p,
                       likes: count || 0,
-                      likedByMe: !!myLike
+                      likedByMe: !!myLike // Sincroniza estado real
                   };
               }
               return p;
           }));
       })
       // C. Escuta COMENTÁRIOS
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, async (payload) => {
-           // Recarrega lista completa para garantir consistência
-           fetchPosts(true);
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, async (payload) => {
+           // Quando chega um comentário novo, recarregamos a lista de comentários daquele post específico se estiver aberta
+           // Ou apenas atualizamos o contador
+           const pid = payload.new.post_id;
+           
+           // Fetch dos comentários atualizados deste post
+           const { data: freshComments } = await supabase
+            .from('comments')
+            .select('*, users:user_id(name, avatar_url, avatar_cor)')
+            .eq('post_id', pid)
+            .order('created_at', { ascending: true });
+
+           if (freshComments) {
+               const mappedComments = freshComments.map((c: any) => ({
+                    id: c.id, 
+                    text: c.content, 
+                    timestamp: c.created_at, 
+                    userId: c.user_id,
+                    userName: c.users?.name || 'Usuário', 
+                    avatarUrl: c.users?.avatar_url, 
+                    avatarCor: c.users?.avatar_cor
+               }));
+
+               setPosts(current => current.map(p => {
+                   if (p.id === pid) return { ...p, comments: mappedComments };
+                   return p;
+               }));
+           }
       })
       .subscribe();
 
@@ -155,6 +181,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
     if ((!newPost.trim() && !selectedImageFile) || processingImage) return;
 
     setProcessingImage(true);
+    const tempId = 'temp-' + Date.now();
 
     try {
         let uploadedImageUrl;
@@ -163,7 +190,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         }
 
         const optimisticPost: Post = {
-            id: 'temp-' + Date.now(),
+            id: tempId,
             userId: user.id,
             userName: user.name,
             avatarUrl: user.avatarUrl,
@@ -176,15 +203,17 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             likedByMe: false
         };
 
-        // Adiciona otimista
+        // 1. Adiciona otimista
         setPosts([optimisticPost, ...posts]);
         
+        // Reset UI
         setNewPost('');
         setSelectedImageFile(null);
         setImagePreview(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
 
-        await storage.savePost({
+        // 2. Salva no banco e ESPERA o ID Real
+        const realPostData = await storage.savePost({
             userId: user.id,
             userName: user.name,
             content: optimisticPost.content,
@@ -194,6 +223,14 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             timestamp: optimisticPost.timestamp,
             id: '' 
         });
+
+        // 3. CRUCIAL: Troca o ID temporário pelo Real no estado
+        // Isso permite curtir imediatamente sem F5
+        if (realPostData) {
+            setPosts(current => current.map(p => 
+                p.id === tempId ? { ...p, id: realPostData.id } : p
+            ));
+        }
 
         const xpBonus = uploadedImageUrl ? 75 : 50;
         const coinBonus = 10;
@@ -211,11 +248,12 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         storage.saveUser(updatedUser);
 
         setTimeout(() => setShowXpGain(false), 2000);
-        // O Realtime cuidará de atualizar o ID temporário para o real eventualmente
 
     } catch (error) {
         console.error("Erro ao publicar:", error);
-        alert("Erro ao publicar. Tente novamente.");
+        // Remove post otimista em caso de erro
+        setPosts(current => current.filter(p => p.id !== tempId));
+        alert("Erro ao publicar. Verifique sua conexão.");
     } finally {
         setProcessingImage(false);
     }
@@ -245,7 +283,11 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleLike = async (postId: string) => {
-    // 1. Atualização Visual Otimista (Para feedback instantâneo no clique)
+    // Proteção: Não permite curtir posts que ainda estão salvando (temp-id)
+    if (postId.startsWith('temp-')) return;
+
+    // 1. Atualização Visual Otimista
+    const prevPosts = [...posts];
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
@@ -257,8 +299,14 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         return p;
     }));
     
-    // 2. Envia para o banco (O Realtime confirmará o estado final)
-    await storage.toggleLike(postId, user.id);
+    try {
+        // 2. Envia para o banco
+        await storage.toggleLike(postId, user.id);
+    } catch (e) {
+        // Reverte em caso de erro
+        setPosts(prevPosts);
+        console.error("Falha ao curtir");
+    }
   };
 
   const toggleComments = (postId: string) => {
@@ -269,11 +317,14 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleCommentSubmit = async (postId: string) => {
+    if (postId.startsWith('temp-')) return; // Proteção
+
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
 
+    const tempId = 'temp-' + Date.now();
     const newComment: Comment = {
-        id: 'temp-' + Date.now(),
+        id: tempId,
         text: text,
         timestamp: new Date().toISOString(),
         userId: user.id,
@@ -287,18 +338,37 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         if(p.id === postId) return { ...p, comments: [...(p.comments || []), newComment] };
         return p;
     }));
-    
-    // Atualiza pontos
-    const updatedUser = {
-        ...user,
-        xp: user.xp + 10,
-        pontosTotais: user.pontosTotais + 2
-    };
-    onUpdateUser(updatedUser);
-    storage.saveUser(updatedUser);
-    
     setCommentInputs({ ...commentInputs, [postId]: '' });
-    await storage.addComment(postId, user.id, text);
+
+    try {
+        // Salva e troca ID
+        const realComment = await storage.addComment(postId, user.id, text);
+        
+        if (realComment) {
+             setPosts(current => current.map(p => {
+                 if(p.id === postId) {
+                     const updatedComments = p.comments.map(c => c.id === tempId ? realComment : c);
+                     return { ...p, comments: updatedComments };
+                 }
+                 return p;
+             }));
+             
+            // Atualiza pontos do usuário apenas se sucesso
+            const updatedUser = {
+                ...user,
+                xp: user.xp + 10,
+                pontosTotais: user.pontosTotais + 2
+            };
+            onUpdateUser(updatedUser);
+            storage.saveUser(updatedUser);
+        }
+    } catch (e) {
+        // Reverte
+        setPosts(current => current.map(p => {
+            if (p.id === postId) return { ...p, comments: p.comments.filter(c => c.id !== tempId) };
+            return p;
+        }));
+    }
   };
 
   return (
@@ -412,7 +482,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
            </div>
         ) : posts.length > 0 ? (
           posts.map((post) => (
-            <div key={post.id} className="bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition animate-fadeIn relative">
+            <div key={post.id} className={`bg-white rounded-2xl p-4 md:p-6 apple-shadow apple-transition animate-fadeIn relative ${post.id.startsWith('temp-') ? 'opacity-70' : ''}`}>
                 <div className="flex items-center gap-3 mb-4">
                   <div className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => handleProfileClick(post.userId)}>
                     <Avatar name={post.userName} bgColor={post.avatarCor || 'bg-gray-400'} url={post.avatarUrl} size="xs" />
@@ -437,7 +507,9 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                           </div>
                         )}
                     </div>
-                    <p className="text-[10px] text-apple-secondary">{new Date(post.timestamp).toLocaleDateString()}</p>
+                    <p className="text-[10px] text-apple-secondary">
+                        {post.id.startsWith('temp-') ? 'Enviando...' : new Date(post.timestamp).toLocaleDateString()}
+                    </p>
                   </div>
                 </div>
                 
@@ -468,7 +540,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
                 {openComments.has(post.id) && (
                   <div className="mt-4 pt-4 border-t border-apple-bg space-y-4">
                     {(post.comments || []).map(c => (
-                      <div key={c.id} className="flex gap-3 animate-fadeIn">
+                      <div key={c.id} className={`flex gap-3 animate-fadeIn ${c.id.startsWith('temp-') ? 'opacity-60' : ''}`}>
                         <div className="cursor-pointer" onClick={() => handleProfileClick(c.userId)}>
                             <Avatar name={c.userName} bgColor={c.avatarCor} url={c.avatarUrl} size="xs" />
                         </div>
