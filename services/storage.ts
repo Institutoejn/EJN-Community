@@ -226,13 +226,26 @@ export const storage = {
     if (!forceRefresh && cached) return cached;
     
     const { data: { session } } = await supabase.auth.getSession();
+    
+    // IMPORTANTE: Busca posts e faz o join correto
     const { data, error } = await supabase
       .from('posts')
-      .select(`*, users:user_id (name, avatar_url, avatar_cor), comments (*, users:user_id (name, avatar_url, avatar_cor)), likes (user_id)`)
+      .select(`
+        *,
+        users:user_id (name, avatar_url, avatar_cor),
+        comments (
+            id, content, created_at, user_id,
+            users:user_id (name, avatar_url, avatar_cor)
+        ),
+        likes (user_id)
+      `)
       .order('created_at', { ascending: false })
       .limit(50);
       
-    if (error) return cached || [];
+    if (error) {
+        console.error("Erro ao buscar posts:", error);
+        return cached || [];
+    }
     
     const mappedPosts = (data || []).map((p: any) => ({
       id: p.id,
@@ -247,9 +260,14 @@ export const storage = {
       isPinned: p.is_pinned,
       likedByMe: session?.user?.id ? (p.likes || []).some((l: any) => l.user_id === session.user.id) : false,
       comments: (p.comments || []).map((c: any) => ({
-        id: c.id, text: c.content, timestamp: c.created_at, userId: c.user_id,
-        userName: c.users?.name || 'Usuário', avatarUrl: c.users?.avatar_url, avatarCor: c.users?.avatar_cor
-      }))
+        id: c.id, 
+        text: c.content, 
+        timestamp: c.created_at, 
+        userId: c.user_id,
+        userName: c.users?.name || 'Usuário', 
+        avatarUrl: c.users?.avatar_url, 
+        avatarCor: c.users?.avatar_cor
+      })).sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     }));
     localCache.set(CACHE_KEYS.POSTS, mappedPosts);
     return mappedPosts;
@@ -273,13 +291,37 @@ export const storage = {
   },
 
   toggleLike: async (postId: string, userId: string) => {
-      const { data } = await supabase.from('likes').select('id').eq('post_id', postId).eq('user_id', userId).single();
-      if (data) await supabase.from('likes').delete().eq('id', data.id);
-      else await supabase.from('likes').insert({ post_id: postId, user_id: userId });
+      try {
+          // CORREÇÃO CRÍTICA: Use maybeSingle() ao invés de single()
+          // single() estoura erro se não achar nada, impedindo o insert
+          const { data, error } = await supabase
+            .from('likes')
+            .select('id')
+            .eq('post_id', postId)
+            .eq('user_id', userId)
+            .maybeSingle();
+            
+          if (error && error.code !== 'PGRST116') throw error; // Ignora erro de "não encontrado"
+
+          if (data) {
+              // Se já existe, remove (Unlike)
+              await supabase.from('likes').delete().eq('id', data.id);
+          } else {
+              // Se não existe, cria (Like)
+              await supabase.from('likes').insert({ post_id: postId, user_id: userId });
+          }
+      } catch (e) {
+          console.error("Erro ao curtir:", e);
+          throw e;
+      }
   },
 
   addComment: async (postId: string, userId: string, content: string) => {
-      await supabase.from('comments').insert({ post_id: postId, user_id: userId, content: content });
+      const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: userId, content: content });
+      if (error) {
+          console.error("Erro ao comentar:", error);
+          throw error;
+      }
   },
 
   getTrending: async (): Promise<TrendingTopic[]> => {
