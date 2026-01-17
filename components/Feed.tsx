@@ -164,11 +164,20 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
             id: '' 
         });
 
-        const bonus = uploadedImageUrl ? 75 : 50;
-        setXpAmount(bonus);
+        // Coins = 10, XP = 50
+        const xpBonus = uploadedImageUrl ? 75 : 50;
+        const coinBonus = 10;
+        
+        setXpAmount(xpBonus);
         setShowXpGain(true);
         
-        const updatedUser = { ...user, xp: user.xp + bonus, postsCount: (user.postsCount || 0) + 1 };
+        // ATUALIZAÇÃO INSTANTÂNEA PARA O RANKING
+        const updatedUser = { 
+            ...user, 
+            xp: user.xp + xpBonus,
+            pontosTotais: user.pontosTotais + coinBonus, 
+            postsCount: (user.postsCount || 0) + 1 
+        };
         onUpdateUser(updatedUser);
         storage.saveUser(updatedUser);
 
@@ -205,6 +214,7 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
   };
 
   const handleLike = async (postId: string) => {
+    // 1. Atualiza visual do botão
     setPosts(current => current.map(p => {
         if(p.id === postId) {
             return {
@@ -215,6 +225,10 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         }
         return p;
     }));
+    
+    // 2. Não ganha pontos por curtir o próprio post, então não atualiza user local
+    // (A lógica de ganhar pontos ao RECEBER like é no servidor)
+    
     await storage.toggleLike(postId, user.id);
   };
 
@@ -243,6 +257,16 @@ const Feed: React.FC<FeedProps> = ({ user, onUpdateUser, onFollow }) => {
         if(p.id === postId) return { ...p, comments: [...(p.comments || []), newComment] };
         return p;
     }));
+    
+    // ATUALIZAÇÃO INSTANTÂNEA DE RANKING POR COMENTÁRIO
+    // +10 XP, +2 Coins
+    const updatedUser = {
+        ...user,
+        xp: user.xp + 10,
+        pontosTotais: user.pontosTotais + 2
+    };
+    onUpdateUser(updatedUser);
+    storage.saveUser(updatedUser);
     
     setCommentInputs({ ...commentInputs, [postId]: '' });
     await storage.addComment(postId, user.id, text);

@@ -84,12 +84,23 @@ export interface RewardItem {
   category: 'Mentoria' | 'Badge' | 'Evento' | 'Produto';
 }
 
+export interface DailyNotice {
+  id: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface AppSettings {
   platformName: string;
+  // Posts
   xpPerPost: number;
-  xpPerComment: number;
-  xpPerLikeReceived: number;
   coinsPerPost: number;
+  // Comentários
+  xpPerComment: number;
+  coinsPerComment: number;
+  // Likes
+  xpPerLikeReceived: number;
+  coinsPerLikeReceived: number;
 }
 
 export interface TrendingTopic {

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { User, AppView } from '../types';
+import { User, AppView, DailyNotice } from '../types';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
+import { Icons } from '../constants';
 
 interface SidebarProps {
   user: User;
@@ -12,6 +13,10 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) => {
   const [topUsers, setTopUsers] = useState<any[]>([]);
+  const [notices, setNotices] = useState<DailyNotice[]>([]);
+  const [isEditingNotices, setIsEditingNotices] = useState(false);
+  const [newNotice, setNewNotice] = useState('');
+  const [loadingNotices, setLoadingNotices] = useState(true);
 
   useEffect(() => {
     // Busca dados REAIS do ranking lateral
@@ -32,20 +37,44 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         setTopUsers(ranked);
     };
     fetchRanking();
-  }, [user.id]); // Recarrega se o ID do usuário mudar (login/logout)
+    fetchNotices();
+  }, [user.id]);
+
+  const fetchNotices = async () => {
+    try {
+      const data = await storage.getDailyNotices();
+      setNotices(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingNotices(false);
+    }
+  };
+
+  const handleAddNotice = async () => {
+    if (!newNotice.trim()) return;
+    try {
+      // Otimista
+      const tempNotice = { id: 'temp-'+Date.now(), content: newNotice, createdAt: new Date().toISOString() };
+      setNotices([tempNotice, ...notices]);
+      setNewNotice('');
+      
+      await storage.addDailyNotice(newNotice);
+      fetchNotices(); // Sincroniza ID real
+    } catch (e) {
+      alert('Erro ao adicionar aviso');
+    }
+  };
+
+  const handleDeleteNotice = async (id: string) => {
+    if (!confirm('Remover aviso?')) return;
+    setNotices(notices.filter(n => n.id !== id));
+    await storage.deleteDailyNotice(id);
+  };
 
   const handleNav = (view: AppView) => {
     setView(view);
     if (onClose) onClose();
-  };
-
-  const handleFollowClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    // Exemplo real: Seguir o primeiro do ranking se não for eu
-    const top1 = topUsers[0];
-    if (top1 && top1.id !== user.id && onFollow) {
-        onFollow(top1.id);
-    }
   };
 
   return (
@@ -99,21 +128,70 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         </button>
       </div>
 
-      <div className="bg-ejn-dark rounded-2xl p-6 shadow-xl relative overflow-hidden">
+      {/* CARD VERDE - AVISOS DIÁRIOS */}
+      <div className="bg-ejn-dark rounded-2xl p-6 shadow-xl relative overflow-hidden group">
         <div className="relative z-10">
-          <h4 className="font-bold text-white text-sm mb-4">Acelere seu negócio</h4>
-          <div className="space-y-4">
-            <div className="flex gap-3 group cursor-pointer">
-              <div className="w-5 h-5 bg-white/10 rounded-md flex items-center justify-center shrink-0 text-[10px] font-bold text-ejn-gold group-hover:bg-white/20 transition-colors">1</div>
-              <p className="text-xs text-white/80 leading-relaxed font-medium">Conclua o módulo de Vendas Exponenciais para +500 XP.</p>
-            </div>
-            <div className="flex gap-3 group cursor-pointer">
-              <div className="w-5 h-5 bg-white/10 rounded-md flex items-center justify-center shrink-0 text-[10px] font-bold text-ejn-gold group-hover:bg-white/20 transition-colors">2</div>
-              <p className="text-xs text-white/80 leading-relaxed font-medium">Participe do fórum de networking do nível {user.nivel}.</p>
-            </div>
+          <div className="flex justify-between items-start mb-4">
+             <h4 className="font-bold text-white text-sm">Avisos da Diretoria</h4>
+             {user.role === 'gestor' && (
+               <button 
+                 onClick={() => setIsEditingNotices(!isEditingNotices)}
+                 className="text-white/60 hover:text-white hover:bg-white/10 p-1.5 rounded-lg transition-colors"
+               >
+                 <Icons.Edit className="w-4 h-4" />
+               </button>
+             )}
+          </div>
+
+          <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+            {isEditingNotices && (
+              <div className="flex gap-2 mb-4 animate-fadeIn">
+                <input 
+                  type="text" 
+                  value={newNotice}
+                  onChange={(e) => setNewNotice(e.target.value)}
+                  placeholder="Novo aviso..."
+                  className="flex-1 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-xs text-white placeholder-white/50 focus:outline-none focus:bg-white/20"
+                  onKeyPress={(e) => e.key === 'Enter' && handleAddNotice()}
+                />
+                <button 
+                  onClick={handleAddNotice}
+                  className="bg-ejn-gold text-ejn-dark p-2 rounded-lg font-bold hover:scale-105 transition-transform"
+                >
+                  <Icons.Plus className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {loadingNotices ? (
+               <div className="text-white/50 text-xs text-center py-4">Carregando avisos...</div>
+            ) : notices.length > 0 ? (
+              notices.map((notice, index) => (
+                <div key={notice.id} className="flex gap-3 group/item animate-fadeIn">
+                  <div className="w-5 h-5 bg-white/10 rounded-md flex items-center justify-center shrink-0 text-[10px] font-bold text-ejn-gold group-hover/item:bg-white/20 transition-colors">
+                    {index + 1}
+                  </div>
+                  <p className="text-xs text-white/80 leading-relaxed font-medium flex-1">
+                    {notice.content}
+                  </p>
+                  {isEditingNotices && (
+                    <button 
+                      onClick={() => handleDeleteNotice(notice.id)}
+                      className="text-red-400 hover:text-red-300 opacity-60 hover:opacity-100"
+                    >
+                      <Icons.X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="text-white/40 text-xs italic text-center py-2">Nenhum aviso hoje.</div>
+            )}
           </div>
         </div>
-        <div className="absolute -bottom-6 -right-6 w-24 h-24 bg-ejn-medium/20 rounded-full blur-2xl"></div>
+        
+        {/* Elemento Decorativo */}
+        <div className="absolute -bottom-6 -right-6 w-24 h-24 bg-ejn-medium/20 rounded-full blur-2xl pointer-events-none"></div>
       </div>
 
       <footer className="text-center pb-4 lg:pb-0">

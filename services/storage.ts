@@ -1,4 +1,4 @@
-import { User, Post, Mission, RewardItem, AppSettings, Comment, TrendingTopic } from '../types';
+import { User, Post, Mission, RewardItem, AppSettings, Comment, TrendingTopic, DailyNotice } from '../types';
 import { supabase } from './supabase';
 import { AVATAR_COLORS } from '../constants';
 
@@ -10,7 +10,8 @@ const CACHE_KEYS = {
   MISSIONS: 'ejn_missions_cache',
   REWARDS: 'ejn_rewards_cache',
   SETTINGS: 'ejn_settings_cache',
-  TRENDING: 'ejn_trending_cache'
+  TRENDING: 'ejn_trending_cache',
+  NOTICES: 'ejn_notices_cache'
 };
 
 const localCache = {
@@ -69,18 +70,16 @@ export const storage = {
   getLocalMissions: (): Mission[] => localCache.get<Mission[]>(CACHE_KEYS.MISSIONS) || [],
   getLocalRewards: (): RewardItem[] => localCache.get<RewardItem[]>(CACHE_KEYS.REWARDS) || [],
   getLocalTrending: (): TrendingTopic[] => localCache.get<TrendingTopic[]>(CACHE_KEYS.TRENDING) || [],
+  getLocalNotices: (): DailyNotice[] => localCache.get<DailyNotice[]>(CACHE_KEYS.NOTICES) || [],
 
   uploadImage: async (file: File, path: string): Promise<string> => {
     try {
-        // Validação básica
         if (!file) throw new Error("Arquivo inválido");
         if (file.size > 5 * 1024 * 1024) throw new Error("Imagem muito grande (Max 5MB)");
 
         const fileExt = file.name.split('.').pop();
-        // Nome único com timestamp e random string para evitar colisões
         const fileName = `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExt}`;
         
-        // Upsert true garante que não falha se existir algo com mesmo nome (improvável)
         const { error: uploadError } = await supabase.storage
             .from('media')
             .upload(fileName, file, { upsert: true, cacheControl: '3600' });
@@ -106,7 +105,6 @@ export const storage = {
     const { data, error } = await supabase.from('users').select('*').eq('id', id).single();
     if (error || !data) return null;
     
-    // Busca dados sociais extras para o popup
     const [following, followers] = await Promise.all([
         supabase.from('follows').select('following_id').eq('follower_id', id),
         supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', id)
@@ -328,7 +326,6 @@ export const storage = {
     return mapped;
   },
   
-  // --- MÉTODO TRANSAÇÃO SEGURA PARA RESGATE ---
   claimReward: async (rewardId: string, userId: string): Promise<{success: boolean, message: string}> => {
     try {
         const { data, error } = await supabase.rpc('claim_reward', { p_reward_id: rewardId, p_user_id: userId });
@@ -340,7 +337,6 @@ export const storage = {
     }
   },
 
-  // --- ADMIN: LISTAR RESGATES ---
   getClaims: async (): Promise<any[]> => {
     const { data, error } = await supabase
         .from('reward_claims')
@@ -370,12 +366,58 @@ export const storage = {
 
   getSettings: async (): Promise<AppSettings> => {
     const { data, error } = await supabase.from('settings').select('*').single();
-    if (error || !data) return { platformName: 'Rede Social EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10 };
-    return { platformName: data.platform_name, xpPerPost: data.xp_per_post, xpPerComment: data.xp_per_comment, xpPerLikeReceived: data.xp_per_like, coinsPerPost: data.coins_per_post };
+    if (error || !data) return { 
+        platformName: 'Rede Social EJN', 
+        xpPerPost: 50, coinsPerPost: 10,
+        xpPerComment: 10, coinsPerComment: 2,
+        xpPerLikeReceived: 5, coinsPerLikeReceived: 1
+    };
+    return { 
+        platformName: data.platform_name, 
+        xpPerPost: data.xp_per_post, coinsPerPost: data.coins_per_post,
+        xpPerComment: data.xp_per_comment, coinsPerComment: data.coins_per_comment,
+        xpPerLikeReceived: data.xp_per_like, coinsPerLikeReceived: data.coins_per_like
+    };
   },
+
   saveSettings: async (settings: AppSettings) => {
-      const { error } = await supabase.from('settings').upsert({ id: 1, platform_name: settings.platformName, xp_per_post: settings.xpPerPost, xp_per_comment: settings.xpPerComment, xp_per_like: settings.xpPerLikeReceived, coins_per_post: settings.coinsPerPost });
+      const { error } = await supabase.from('settings').upsert({ 
+          id: 1, 
+          platform_name: settings.platformName, 
+          xp_per_post: settings.xpPerPost, coins_per_post: settings.coinsPerPost,
+          xp_per_comment: settings.xpPerComment, coins_per_comment: settings.coinsPerComment,
+          xp_per_like: settings.xpPerLikeReceived, coins_per_like: settings.coinsPerLikeReceived
+      });
       if (error) throw error;
+  },
+
+  // --- NOVOS MÉTODOS PARA AVISOS DIÁRIOS ---
+  getDailyNotices: async (): Promise<DailyNotice[]> => {
+    const cached = localCache.get<DailyNotice[]>(CACHE_KEYS.NOTICES);
+    
+    const { data, error } = await supabase
+      .from('daily_notices')
+      .select('*')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+      
+    if (error) return cached || [];
+    
+    const mapped = (data || []).map((n: any) => ({
+      id: n.id,
+      content: n.content,
+      createdAt: n.created_at
+    }));
+    localCache.set(CACHE_KEYS.NOTICES, mapped);
+    return mapped;
+  },
+
+  addDailyNotice: async (content: string) => {
+    await supabase.from('daily_notices').insert({ content });
+  },
+
+  deleteDailyNotice: async (id: string) => {
+    await supabase.from('daily_notices').delete().eq('id', id);
   },
 
   followUser: async (followerId: string, followingId: string) => {

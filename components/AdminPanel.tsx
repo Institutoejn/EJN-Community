@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { User, Post, Mission, RewardItem, AdminSubView, AppSettings } from '../types';
 import { storage } from '../services/storage';
@@ -16,9 +15,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
   const [posts, setPosts] = useState<Post[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [rewards, setRewards] = useState<RewardItem[]>([]);
-  const [claims, setClaims] = useState<any[]>([]); // Nova lista de reivindicações
+  const [claims, setClaims] = useState<any[]>([]); 
   const [settings, setSettings] = useState<AppSettings>({
-      platformName: 'Instituto EJN', xpPerPost: 50, xpPerComment: 10, xpPerLikeReceived: 5, coinsPerPost: 10
+      platformName: 'Instituto EJN', 
+      xpPerPost: 50, coinsPerPost: 10,
+      xpPerComment: 10, coinsPerComment: 2,
+      xpPerLikeReceived: 5, coinsPerLikeReceived: 1
   });
 
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
@@ -42,12 +44,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
   const loadData = async () => {
     setLoadingData(true);
     try {
+      // Force refresh true para garantir dados em tempo real
       const u = await storage.getUsers(true).catch(() => []);
       const p = await storage.getPosts(true).catch(() => []);
       const m = await storage.getMissions().catch(() => []);
       const r = await storage.getRewards().catch(() => []);
       const s = await storage.getSettings().catch(() => settings);
-      const c = await storage.getClaims().catch(() => []); // Carrega claims
+      const c = await storage.getClaims().catch(() => []); 
 
       setUsers(u); 
       setPosts(p); 
@@ -80,7 +83,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
     }
   };
 
-  // --- Ações Existentes (Manter lógica) ---
   const handleUpdateUser = async (u: User) => {
     await wrapAction(u.id, async () => {
         await storage.saveUser(u);
@@ -164,11 +166,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
   const handleSaveSettings = async () => {
       await wrapAction('settings-save', async () => {
           await storage.saveSettings(settings);
-          showToast('Configurações salvas.');
+          showToast('Regras de negócio atualizadas com sucesso!');
       });
   };
 
-  // Added handlers
   const handleOpenMissionModal = (mission?: Mission) => {
     if (mission) {
       setEditingMission(mission);
@@ -199,7 +200,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
     return true;
   });
 
-  if (loadingData) return (
+  if (loadingData && !users.length) return (
     <div className="w-full h-[60vh] flex flex-col items-center justify-center animate-fadeIn">
         <div className="w-12 h-12 border-4 border-ejn-gold/20 border-t-ejn-gold rounded-full animate-spin mb-4"></div>
         <p className="font-bold text-apple-secondary animate-pulse uppercase tracking-widest text-[10px]">Sincronizando EJN Cloud...</p>
@@ -226,7 +227,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
             { id: 'POSTS', label: 'Posts', icon: '📝' },
             { id: 'MISSIONS_MGMT', label: 'Missões', icon: '🎯' },
             { id: 'REWARDS_MGMT', label: 'Brindes', icon: '🎁' },
-            { id: 'CLAIMS', label: 'Entregas', icon: '🚚' }, // Nova opção
+            { id: 'CLAIMS', label: 'Entregas', icon: '🚚' }, 
             { id: 'SETTINGS', label: 'Ajustes', icon: '⚙️' },
           ].map(item => (
             <button
@@ -242,22 +243,30 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
 
       <section className="flex-1 min-w-0">
         {subView === 'DASHBOARD' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {[
-              { label: 'Alunos Ativos', val: users.filter(u => u.status !== 'suspended').length, icon: '👥', color: 'text-blue-500' },
-              { label: 'Resgates Pendentes', val: claims.filter(c => c.status === 'pending').length, icon: '📦', color: 'text-red-500' },
-              { label: 'Pontos Circulando', val: users.reduce((a, b) => a + (b.pontosTotais || 0), 0), icon: '🪙', color: 'text-ejn-gold' },
-              { label: 'Estoque Total', val: rewards.reduce((a,b) => a + b.stock, 0), icon: '🎁', color: 'text-ejn-medium' },
-            ].map((c, i) => (
-              <div key={i} className="bg-white p-6 rounded-[32px] apple-shadow">
-                <h3 className={`text-2xl font-black ${c.color}`}>{c.val.toLocaleString()}</h3>
-                <p className="text-[10px] font-bold text-apple-secondary uppercase tracking-wider">{c.label}</p>
+          <div>
+              <div className="flex justify-between items-center mb-6">
+                 <h2 className="text-lg font-bold text-apple-text">Visão Geral em Tempo Real</h2>
+                 <button onClick={loadData} className="text-xs font-bold bg-white px-4 py-2 rounded-full border hover:bg-apple-bg">
+                    ↻ Atualizar Agora
+                 </button>
               </div>
-            ))}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { label: 'Alunos Ativos', val: users.filter(u => u.status !== 'suspended').length, icon: '👥', color: 'text-blue-500' },
+                  { label: 'Saques Pendentes', val: claims.filter(c => c.status === 'pending').length, icon: '📦', color: 'text-red-500' },
+                  { label: 'Pontos Circulando', val: users.reduce((a, b) => a + (b.pontosTotais || 0), 0), icon: '🪙', color: 'text-ejn-gold' },
+                  { label: 'Estoque Total', val: rewards.reduce((a,b) => a + b.stock, 0), icon: '🎁', color: 'text-ejn-medium' },
+                ].map((c, i) => (
+                  <div key={i} className="bg-white p-6 rounded-[32px] apple-shadow">
+                    <h3 className={`text-2xl font-black ${c.color}`}>{c.val.toLocaleString()}</h3>
+                    <p className="text-[10px] font-bold text-apple-secondary uppercase tracking-wider">{c.label}</p>
+                  </div>
+                ))}
+              </div>
           </div>
         )}
 
-        {/* LISTA DE REIVINDICAÇÕES (NOVA) */}
+        {/* LISTA DE REIVINDICAÇÕES */}
         {subView === 'CLAIMS' && (
            <div className="bg-white rounded-[32px] apple-shadow overflow-hidden">
                <div className="p-8 border-b border-apple-bg flex justify-between items-center">
@@ -300,7 +309,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
 
         {subView === 'USERS' && (
           <div className="bg-white rounded-[32px] apple-shadow overflow-hidden">
-             {/* ... (Manter código existente da tabela de usuários) ... */}
              <div className="p-8 border-b border-apple-bg flex flex-col md:flex-row justify-between items-center gap-4">
                 <h3 className="font-black text-sm uppercase">Base de Membros ({filteredUsers.length})</h3>
                 <div className="flex flex-wrap gap-2 justify-center">
@@ -450,29 +458,74 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onClose }) => {
 
         {subView === 'SETTINGS' && (
            <div className="bg-white rounded-[32px] apple-shadow p-8">
-               <h3 className="font-black text-sm uppercase mb-6">Regras de Negócio</h3>
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                   <div className="space-y-2">
-                       <label className="text-[10px] font-bold text-apple-secondary uppercase">Nome da Plataforma</label>
-                       <input type="text" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.platformName} onChange={e => setSettings({...settings, platformName: e.target.value})} />
+               <h3 className="font-black text-sm uppercase mb-6">Controle Geral de Pontuação</h3>
+               <div className="bg-ejn-gold/5 border border-ejn-gold/20 rounded-xl p-4 mb-6">
+                    <p className="text-xs text-ejn-dark font-medium leading-relaxed">
+                        ⚠️ <strong>Atenção:</strong> Alterações nestas taxas entram em vigor <strong>instantaneamente</strong> para todas as novas ações realizadas na plataforma. O histórico de pontos já distribuídos não será alterado.
+                    </p>
+               </div>
+               
+               <div className="space-y-8">
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2 col-span-full">
+                            <label className="text-[10px] font-bold text-apple-secondary uppercase">Nome da Plataforma</label>
+                            <input type="text" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.platformName} onChange={e => setSettings({...settings, platformName: e.target.value})} />
+                        </div>
                    </div>
-                   <div className="space-y-2">
-                       <label className="text-[10px] font-bold text-apple-secondary uppercase">XP por Publicação</label>
-                       <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.xpPerPost} onChange={e => setSettings({...settings, xpPerPost: Number(e.target.value)})} />
+                   
+                   <div className="border-t border-apple-bg pt-6">
+                        <h4 className="font-black text-xs uppercase text-apple-text mb-4">Recompensas por Publicação</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">XP (Reputação)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.xpPerPost} onChange={e => setSettings({...settings, xpPerPost: Number(e.target.value)})} />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">Moedas (Loja)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.coinsPerPost} onChange={e => setSettings({...settings, coinsPerPost: Number(e.target.value)})} />
+                            </div>
+                        </div>
                    </div>
-                   <div className="space-y-2">
-                       <label className="text-[10px] font-bold text-apple-secondary uppercase">Moedas por Publicação</label>
-                       <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.coinsPerPost} onChange={e => setSettings({...settings, coinsPerPost: Number(e.target.value)})} />
+
+                   <div className="border-t border-apple-bg pt-6">
+                        <h4 className="font-black text-xs uppercase text-apple-text mb-4">Recompensas por Comentário</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">XP (Reputação)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.xpPerComment} onChange={e => setSettings({...settings, xpPerComment: Number(e.target.value)})} />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">Moedas (Loja)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.coinsPerComment} onChange={e => setSettings({...settings, coinsPerComment: Number(e.target.value)})} />
+                            </div>
+                        </div>
+                   </div>
+
+                   <div className="border-t border-apple-bg pt-6">
+                        <h4 className="font-black text-xs uppercase text-apple-text mb-4">Recompensas por Receber Like</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">XP (Reputação)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.xpPerLikeReceived} onChange={e => setSettings({...settings, xpPerLikeReceived: Number(e.target.value)})} />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-apple-secondary uppercase">Moedas (Loja)</label>
+                                <input type="number" className="w-full h-12 px-4 bg-apple-bg rounded-xl font-bold" value={settings.coinsPerLikeReceived} onChange={e => setSettings({...settings, coinsPerLikeReceived: Number(e.target.value)})} />
+                            </div>
+                        </div>
                    </div>
                </div>
-               <button onClick={handleSaveSettings} className="bg-ejn-dark text-white px-8 py-3 rounded-xl font-bold uppercase tracking-widest hover:scale-105 apple-transition shadow-lg">
-                  Atualizar Regras Globais
-               </button>
+
+               <div className="mt-8 pt-8 border-t border-apple-bg">
+                    <button onClick={handleSaveSettings} className="w-full bg-ejn-dark text-white px-8 py-4 rounded-xl font-bold uppercase tracking-widest hover:scale-[1.02] apple-transition shadow-lg">
+                        Salvar Todas as Configurações
+                    </button>
+               </div>
            </div>
         )}
       </section>
 
-      {/* MODAIS DE EDIÇÃO */}
+      {/* MODAIS DE EDIÇÃO (Manter código existente) */}
       {editingUser && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-6 bg-ejn-dark/40 backdrop-blur-md">
            <div className="bg-white w-full max-w-lg rounded-[40px] p-10 apple-shadow relative animate-fadeIn">
