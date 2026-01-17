@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { User, AppView, DailyNotice } from '../types';
 import Avatar from './Avatar';
 import { storage } from '../services/storage';
+import { supabase } from '../services/supabase'; // Import crucial para o Realtime
 import { Icons } from '../constants';
 
 interface SidebarProps {
@@ -17,12 +18,15 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
   const [isEditingNotices, setIsEditingNotices] = useState(false);
   const [newNotice, setNewNotice] = useState('');
   const [loadingNotices, setLoadingNotices] = useState(true);
+  const [liveUpdate, setLiveUpdate] = useState(false); // Estado para efeito visual de atualização
 
-  useEffect(() => {
-    // Busca dados REAIS do ranking lateral
-    const fetchRanking = async () => {
-        const users = await storage.getUsers();
-        // Ordena por pontos totais e pega top 5
+  // Função isolada para buscar o ranking
+  const fetchRanking = async (forceRefresh = false) => {
+    try {
+        // Se for refresh forçado, ignora o cache local para pegar o valor REAL do banco
+        const users = await storage.getUsers(forceRefresh);
+        
+        // Ordena por PONTOS TOTAIS (Coins) como solicitado para o ranking de negócios
         const ranked = users
             .sort((a, b) => b.pontosTotais - a.pontosTotais)
             .slice(0, 5)
@@ -35,10 +39,58 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
                 isCurrent: u.id === user.id
             }));
         setTopUsers(ranked);
-    };
-    fetchRanking();
+        
+        if (forceRefresh) {
+            setLiveUpdate(true);
+            setTimeout(() => setLiveUpdate(false), 1000);
+        }
+    } catch (e) {
+        console.error("Erro ao atualizar ranking:", e);
+    }
+  };
+
+  useEffect(() => {
+    // 1. Carga inicial (Cache + Rede)
+    fetchRanking(false); // Carrega rápido do cache
+    fetchRanking(true);  // Atualiza com dados reais do servidor
+
     fetchNotices();
-  }, [user.id]);
+
+    // 2. INSCRIÇÃO EM TEMPO REAL (REALTIME)
+    // Escuta qualquer mudança na tabela 'users' (pontos mudaram, xp mudou, etc)
+    const rankingSubscription = supabase
+      .channel('sidebar-ranking-updates')
+      .on(
+        'postgres_changes',
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'users' 
+        },
+        (payload) => {
+          // Se houver qualquer atualização em usuários, recarrega o ranking forçando dados novos
+          // Isso garante que se um aluno ganhar 1 ponto, o ranking atualiza na hora para todos
+          fetchRanking(true);
+        }
+      )
+      .subscribe();
+
+    const noticesSubscription = supabase
+      .channel('sidebar-notices-updates')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_notices' },
+        () => {
+            fetchNotices();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(rankingSubscription);
+      supabase.removeChannel(noticesSubscription);
+    };
+  }, [user.id]); // Recria apenas se o ID do usuário mudar (login/logout)
 
   const fetchNotices = async () => {
     try {
@@ -54,13 +106,12 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
   const handleAddNotice = async () => {
     if (!newNotice.trim()) return;
     try {
-      // Otimista
       const tempNotice = { id: 'temp-'+Date.now(), content: newNotice, createdAt: new Date().toISOString() };
       setNotices([tempNotice, ...notices]);
       setNewNotice('');
       
       await storage.addDailyNotice(newNotice);
-      fetchNotices(); // Sincroniza ID real
+      // O Realtime atualizará a lista final
     } catch (e) {
       alert('Erro ao adicionar aviso');
     }
@@ -99,25 +150,33 @@ const Sidebar: React.FC<SidebarProps> = ({ user, setView, onClose, onFollow }) =
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl p-6 apple-shadow">
+      <div className="bg-white rounded-2xl p-6 apple-shadow relative overflow-hidden">
+        {/* Indicador de Atualização em Tempo Real */}
+        <div className={`absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full m-6 transition-opacity duration-500 ${liveUpdate ? 'opacity-100 animate-ping' : 'opacity-0'}`}></div>
+
         <div className="flex items-center justify-between mb-5">
           <h4 className="font-bold text-apple-text text-sm">Top 5 Global</h4>
-          <span className="text-[10px] font-black text-ejn-medium uppercase tracking-widest">Tempo Real</span>
+          <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${liveUpdate ? 'text-green-600' : 'text-ejn-medium'}`}>
+             {liveUpdate ? 'Atualizando...' : 'Tempo Real'}
+          </span>
         </div>
         <div className="space-y-4">
           {topUsers.length > 0 ? topUsers.map((u, i) => (
-            <div key={i} className={`flex items-center gap-3 ${u.isCurrent ? 'bg-ejn-gold/5 p-2 -mx-2 rounded-xl border border-ejn-gold/20' : ''}`}>
-              <div className="text-[10px] font-bold text-apple-tertiary w-4">{i + 1}º</div>
+            <div key={u.id} className={`flex items-center gap-3 animate-fadeIn ${u.isCurrent ? 'bg-ejn-gold/5 p-2 -mx-2 rounded-xl border border-ejn-gold/20' : ''}`}>
+              <div className={`text-[10px] font-bold w-4 ${i === 0 ? 'text-ejn-gold text-sm' : 'text-apple-tertiary'}`}>{i + 1}º</div>
               <div className="flex-1 min-w-0 flex items-center gap-2">
                  <Avatar name={u.name} bgColor={u.avatarCor} url={u.avatarUrl} size="xs" className="w-8 h-8 text-[10px]" />
                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-apple-text truncate">{u.name}</p>
+                    <p className={`text-xs font-bold truncate ${u.isCurrent ? 'text-ejn-dark' : 'text-apple-text'}`}>{u.name}</p>
                     <p className="text-[10px] text-apple-secondary font-medium">{u.points.toLocaleString()} pts</p>
                  </div>
               </div>
             </div>
           )) : (
-              <div className="text-center py-4 text-xs text-apple-tertiary">Carregando ranking...</div>
+              <div className="text-center py-4 text-xs text-apple-tertiary">
+                  <div className="inline-block w-4 h-4 border-2 border-ejn-medium border-t-transparent rounded-full animate-spin mr-2"></div>
+                  Sincronizando...
+              </div>
           )}
         </div>
         <button 
